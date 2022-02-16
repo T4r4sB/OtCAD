@@ -4,6 +4,13 @@ use std::cmp::max;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum FontAliasingMode {
+  NoAA,
+  AA,
+  TT,
+}
+
 pub enum Glyph {
   NoAA (Image<bool>),
   AA (Image<u8>),
@@ -13,13 +20,14 @@ pub enum Glyph {
 pub struct FontLine {
   name: String,
   size: i32,
+  aliasing_mode: FontAliasingMode,
   chars: HashMap<char, Glyph>,
 }
 
 impl FontLine {
-  pub fn new(name: String, size: i32) -> Self {
+  pub fn new(name: String, size: i32, aliasing_mode: FontAliasingMode) -> Self {
     Self {
-      name, size, chars: Default::default(),
+      name, size, aliasing_mode, chars: Default::default(),
     }
   }
 
@@ -33,7 +41,7 @@ impl FontLine {
 }
 
 pub trait FontLoader {
-  fn load_glyphs(&mut self, font_name: &str, font_size: i32, code_from: u32, code_to: u32) -> HashMap<char, Glyph>;
+  fn load_glyphs(&mut self, font_name: &str, font_size: i32, code_from: u32, code_to: u32, aliasing_mode: FontAliasingMode) -> HashMap<char, Glyph>;
 }
 
 #[derive(Clone)]
@@ -109,7 +117,7 @@ impl Font {
   fn get_char<'i>(&self, c: char, line: &'i mut FontLine) -> Option<&'i Glyph> {
     if !line.chars.contains_key(&c) {
       let code = c as u32;
-      let additional_glyphs = self.loader.borrow_mut().load_glyphs(&line.name, line.size, code & !0xFF, (code & !0xFF) + 0x100);
+      let additional_glyphs = self.loader.borrow_mut().load_glyphs(&line.name, line.size, code & !0xFF, (code & !0xFF) + 0x100, line.aliasing_mode);
       line.chars.extend(additional_glyphs);
     }
 
@@ -119,14 +127,14 @@ impl Font {
   fn get_size_with(&self, text: &str, line: &mut FontLine) -> ImageSize {
     let mut result = (0, 0);
     for c in text.chars() {
-      match self.get_char(c, line) {
-        Some(Glyph::NoAA(img)) => {
-          let sz = img.get_size();
-          result.0 += sz.0;
-          result.1 = max(result.1, sz.1);
-        },
-        _ => {}
-      }
+      let sz = match self.get_char(c, line) {
+        Some(Glyph::NoAA(img)) => img.get_size(),
+        Some(Glyph::AA(img)) => img.get_size(),
+        Some(Glyph::TT(img)) => img.get_size(),
+        None => (0, 0),
+      };
+      result.0 += sz.0;
+      result.1 = max(result.1, sz.1);
     }
 
     result
@@ -161,14 +169,59 @@ impl Font {
           dst.draw(img.as_view(), position, |dst, src| if *src {*dst = color;});
           position.0 += img.get_size().0 as i32;
         },
-        _ => {}
+        Some(Glyph::AA(img)) => {
+          dst.draw(img.as_view(), position, |dst, src| {
+            let dst_r = (*dst & 0xFF) as i32;
+            let dst_g = ((*dst >> 8) & 0xFF) as i32;
+            let dst_b = ((*dst >> 16) & 0xFF) as i32;
+            let dst_a = (*dst >> 24) as i32;
+
+            let color_r = (color & 0xFF) as i32;
+            let color_g = ((color >> 8) & 0xFF) as i32;
+            let color_b = ((color >> 16) & 0xFF) as i32;
+            let color_a = (color >> 24) as i32;
+
+            let result_r = (dst_r + (((color_r - dst_r) * (*src as i32) + 255) >> 8)) as u32;
+            let result_g = (dst_g + (((color_g - dst_g) * (*src as i32) + 255) >> 8)) as u32;
+            let result_b = (dst_b + (((color_b - dst_b) * (*src as i32) + 255) >> 8)) as u32;
+            let result_a = (dst_a + (((color_a - dst_a) * (*src as i32) + 255) >> 8)) as u32;
+            *dst = result_r | (result_g << 8) | (result_b << 16) | (result_a << 24);
+          });
+          position.0 += img.get_size().0 as i32;
+        },
+        Some(Glyph::TT(img)) => {
+          dst.draw(img.as_view(), position, |dst, src| {
+            let dst_r = (*dst & 0xFF) as i32;
+            let dst_g = ((*dst >> 8) & 0xFF) as i32;
+            let dst_b = ((*dst >> 16) & 0xFF) as i32;
+            let dst_a = (*dst >> 24) as i32;
+
+            let src_r = (*src & 0xFF) as i32;
+            let src_g = ((*src >> 8) & 0xFF) as i32;
+            let src_b = ((*src >> 16) & 0xFF) as i32;
+            let src_a = (*src >> 24) as i32;
+
+            let color_r = (color & 0xFF) as i32;
+            let color_g = ((color >> 8) & 0xFF) as i32;
+            let color_b = ((color >> 16) & 0xFF) as i32;
+            let color_a = (color >> 24) as i32;
+
+            let result_r = (dst_r + (((color_r - dst_r) * (src_r as i32) + 255) >> 8)) as u32;
+            let result_g = (dst_g + (((color_g - dst_g) * (src_g as i32) + 255) >> 8)) as u32;
+            let result_b = (dst_b + (((color_b - dst_b) * (src_b as i32) + 255) >> 8)) as u32;
+            let result_a = (dst_a + (((color_a - dst_a) * (src_a as i32) + 255) >> 8)) as u32;
+            *dst = result_r | (result_g << 8) | (result_b << 16) | (result_a << 24);
+          });
+          position.0 += img.get_size().0 as i32;
+        },
+        None => {}
       }
     }
   }
 }
 
 pub struct FontFactory {
-  library: HashMap<(String, i32), Rc<RefCell<FontLine>>>,
+  library: HashMap<(String, i32, FontAliasingMode), Rc<RefCell<FontLine>>>,
   loader: Rc<RefCell<dyn FontLoader>>,
 }
 
@@ -184,11 +237,12 @@ impl FontFactory {
     &mut self,
     name: &str,
     size: i32,
+    aliasing_mode: FontAliasingMode,
   ) -> Font {
     let library = self
       .library
-      .entry((name.to_string(), size))
-      .or_insert_with(|| Rc::new(RefCell::new(FontLine::new(name.to_string(), size))));
+      .entry((name.to_string(), size, aliasing_mode))
+      .or_insert_with(|| Rc::new(RefCell::new(FontLine::new(name.to_string(), size, aliasing_mode))));
     Font::new(0x000000, TextLayoutHorizontal::LEFT, TextLayoutVertical::TOP, library.clone(), self.loader.clone())
   }
 }

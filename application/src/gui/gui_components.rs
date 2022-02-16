@@ -1,316 +1,13 @@
-use crate::image::*;
-use crate::draw_context::*;
-use crate::clipboard::Clipboard;
-use crate::font::*;
-use crate::keys::*;
-
 use std::cell::{RefCell};
 use std::cmp::{min, max};
-use std::rc::Rc;
-use std::ops::DerefMut;
+use std::rc::{Rc};
+use std::ops::{Deref, DerefMut};
 
-#[derive(Default, Copy, Clone, Debug)]
-pub struct SizeConstraint {
-  pub absolute: i32,
-  pub relative: i32,
-}
-
-impl SizeConstraint {
-  pub fn fixed(absolute: i32) -> Self {
-    Self {
-      absolute,
-      relative: 0,
-    }
-  }
-
-  pub fn flexible(absolute: i32) -> Self {
-    Self {
-      absolute,
-      relative: 100,
-    }
-  }
-}
-
-#[derive(Default, Copy, Clone, Debug)]
-pub struct SizeConstraints(pub SizeConstraint, pub SizeConstraint);
-
-#[derive(Default, Copy, Clone, Debug)]
-pub struct Rect {
-  left_top: Position,
-  right_bottom: Position,
-}
-
-impl Rect {
-  fn contains(self, position: Position) -> bool {
-    self.left_top.0 <= position.0 &&
-    self.left_top.1 <= position.1 &&
-    self.right_bottom.0 > position.0 &&
-    self.right_bottom.1 > position.1
-  }
-
-  fn relative(self, position: Position) -> Position {
-    (
-      position.0 - self.left_top.0,
-      position.1 - self.left_top.1
-    )
-  }
-}
-
-#[derive(Debug)]
-pub struct GuiControlBase {
-  size_constraints: SizeConstraints,
-  visible: bool,
-  focus: bool,
-  highlight: bool,
-  pressed: bool,
-  rect: Rect,
-}
-
-impl GuiControlBase {
-  fn new(size_constraints: SizeConstraints) -> Self {
-    Self {
-      size_constraints,
-      visible: true,
-      focus: false,
-      highlight: false,
-      pressed: false,
-      rect: Rect::default(),
-    }
-  }
-}
-
-pub enum GuiMessage<'i, 'j> {
-  Draw(&'i mut DrawContext<'j>),
-  UpdateSizeConstraints(&'i mut SizeConstraints),
-  FindDestination(&'i mut Rc<RefCell<dyn GuiControl>>, Position),
-  RectUpdated,
-  MouseDown(Position),
-  MouseMove(Position),
-  MouseUp(Position),
-  MouseWheel(Position, i32),
-  Char(char),
-  KeyDown(Key),
-  KeyUp(Key),
-}
-
-pub trait GuiControl: std::fmt::Debug + 'static {
-  fn get_base_mut(&mut self) -> &mut GuiControlBase;
-  fn on_message(&mut self, m: GuiMessage) -> bool;
-}
-
-pub struct GuiSystem {
-  root: Option<Rc<RefCell<dyn GuiControl>>>,
-  focus: Option<Rc<RefCell<dyn GuiControl>>>,
-  highlight: Option<Rc<RefCell<dyn GuiControl>>>,
-  pressed: Option<Rc<RefCell<dyn GuiControl>>>,
-
-  updated: bool,
-}
-
-macro_rules! set_property {
-  ($self: ident, $new: ident, $getter: ident, $field: ident) => {
-    let off_old_flag = || {
-      if let Some(old) = $self.$getter() {
-        let mut old = old.borrow_mut();
-        let old_base = old.get_base_mut();
-        old_base.$field = false;
-        return true;
-      } else {
-        return false;
-      }
-    };
-
-    if let Some(new_ptr) = $new {
-      let mut new = new_ptr.borrow_mut();
-      let new_base = new.get_base_mut();
-      if new_base.$field {
-        return false;
-      }
-
-      new_base.$field = true;
-      drop(new);
-      off_old_flag();
-      $self.$field = Some(new_ptr);
-    } else {
-      if off_old_flag() {
-        $self.$field = None;
-      } else {
-        return false;
-      }
-    }
-
-    return true;
-  };
-}
-
-impl GuiSystem {
-  pub fn new() -> Self {
-    Self {
-      root: None,
-      focus: None,
-      highlight: None,
-      pressed: None,
-      updated: false,
-    }
-  }
-
-  fn set_rect(control: &mut dyn GuiControl, rect: Rect) {
-    assert!(rect.right_bottom.0 >= rect.left_top.0);
-    assert!(rect.right_bottom.1 >= rect.left_top.1);
-    control.get_base_mut().rect = rect;
-    control.on_message(GuiMessage::RectUpdated);
-  }
-
-  fn get_child(control: &Rc<RefCell<dyn GuiControl>>, position: Position) -> Rc<RefCell<dyn GuiControl>> {
-    let mut result = control.clone();
-    control.borrow_mut().on_message(GuiMessage::FindDestination(&mut result, position));
-    result
-  }
-
-  fn get_size_constraints(control: &mut dyn GuiControl) -> SizeConstraints {
-    let mut size_constraints = control.get_base_mut().size_constraints;
-    control.on_message(GuiMessage::UpdateSizeConstraints(&mut size_constraints));
-    size_constraints
-  }
-
-  fn get_focus(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
-    self.focus.clone()
-  }
-
-  fn set_focus(&mut self, new_focus: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
-    set_property!(self, new_focus, get_focus, focus);
-  }
-
-  fn get_highlight(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
-    self.highlight.clone()
-  }
-
-  fn set_highlight(&mut self, new_highlight: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
-    set_property!(self, new_highlight, get_highlight, highlight);
-  }
-
-  fn get_pressed(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
-    self.pressed.clone()
-  }
-
-  fn set_pressed(&mut self, new_pressed: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
-    set_property!(self, new_pressed, get_pressed, pressed);
-  }
-
-  pub fn on_draw(&mut self, draw_context: &mut DrawContext) {
-    if let Some(root) = &self.root {
-      let mut root = root.borrow_mut();
-      if !self.updated {
-        Self::set_rect(root.deref_mut(), Rect{
-          left_top: (0, 0), 
-          right_bottom: image_size_to_position(draw_context.buffer.get_size()),
-        });
-        self.updated = true;
-      }
-      root.on_message(GuiMessage::Draw(draw_context));
-    }
-  }
-
-  pub fn on_resize(&mut self) {
-    self.updated = false;
-  }
-
-  pub fn get_minimal_size(&self) -> Position {
-    if let Some(root) = &self.root {
-      let mut root = root.borrow_mut();
-      let size_constraints = Self::get_size_constraints(root.deref_mut());
-      (size_constraints.0.absolute, size_constraints.1.absolute)
-    } else {
-      (0, 0)
-    }
-  }
-
-  pub fn on_mouse_down(&mut self, position: Position) -> bool {
-    if let Some(root) = &self.root {
-      let child = Self::get_child(&root, position);
-      if child.borrow_mut().on_message(GuiMessage::MouseDown(position)) {
-        let changed_focus = self.set_focus(Some(child.clone()));
-        let changed_pressed = self.set_pressed(Some(child));
-        return changed_focus || changed_pressed;
-      }
-    }
-    return false;
-  }
-
-  pub fn on_mouse_move(&mut self, position: Position) -> bool {
-    if let Some(root) = &self.root {
-      let maybe_pressed = self.get_pressed();
-      let handler = if let Some(pressed) = &maybe_pressed {pressed.clone()} else {Self::get_child(&root, position)};
-      let handled = handler.borrow_mut().on_message(GuiMessage::MouseMove(position));
-      let changed_highlight = self.set_highlight(Some(handler));
-      return handled || changed_highlight;
-    }
-
-    return false;
-  }
-
-  pub fn on_mouse_wheel(&mut self, position: Position, delta: i32) -> bool {
-    if let Some(root) = &self.root {
-      let maybe_pressed = self.get_pressed();
-      let handler = if let Some(pressed) = &maybe_pressed {pressed.clone()} else {Self::get_child(&root, position)};
-      return handler.borrow_mut().on_message(GuiMessage::MouseWheel(position, delta));
-    }
-
-    return false;
-  }
-
-  pub fn on_mouse_leave(&mut self) -> bool {
-    return self.set_highlight(None);
-  }
-
-  pub fn on_deactivate(&mut self) -> bool {
-    let changed_highlight = self.set_highlight(None);
-    let changed_pressed = self.set_pressed(None);
-    let changed_focus = self.set_focus(None);
-    return changed_highlight || changed_pressed || changed_focus;
-  }
-
-  pub fn on_mouse_up(&mut self, position: Position) -> bool {
-    if let Some(root) = &self.root {
-      let maybe_pressed = self.get_pressed();
-      let handler = if let Some(pressed) = &maybe_pressed {pressed.clone()} else {Self::get_child(&root, position)};
-      if handler.borrow_mut().on_message(GuiMessage::MouseUp(position)) {
-        return self.set_pressed(None);
-      }
-    }
-    return false;
-  }
-
-  pub fn on_char(&mut self, c: char) -> bool {
-    if let Some(focus) = self.get_focus() {
-      return focus.borrow_mut().on_message(GuiMessage::Char(c));
-    }
-
-    return false;
-  }
-
-  pub fn on_key_down(&mut self, k: Key) -> bool {
-    if let Some(focus) = self.get_focus() {
-      return focus.borrow_mut().on_message(GuiMessage::KeyDown(k));
-    }
-
-    return false;
-  }
-
-  pub fn on_key_up(&mut self, k: Key) -> bool {
-    if let Some(focus) = self.get_focus() {
-      return focus.borrow_mut().on_message(GuiMessage::KeyUp(k));
-    }
-
-    return false;
-  }
-
-  pub fn set_root<Control: GuiControl>(&mut self, control: Control) -> Rc<RefCell<Control>> {
-    let result = Rc::new(RefCell::new(control));
-    self.root = Some(result.clone());
-    result
-  }
-}
+use crate::clipboard::Clipboard;
+use crate::font::*;
+use crate::gui::*;
+use crate::image::*;
+use crate::keys::*;
 
 #[derive(Debug)]
 pub enum ContainerLayout {
@@ -321,26 +18,39 @@ pub enum ContainerLayout {
 #[derive(Debug)]
 pub struct Container {
   base: GuiControlBase,
-  real_size_constraints: SizeConstraints,
   layout: ContainerLayout,
   children: Vec<Rc<RefCell<dyn GuiControl>>>,
+  support_compression: bool,
 }
 
 impl Container {
-   pub fn new(size_constraints: SizeConstraints, layout: ContainerLayout) -> Self {
-     Self {
-       base: GuiControlBase::new(size_constraints),
-       real_size_constraints: size_constraints,
-       layout,
-       children: Default::default(),
-     }
-   }
+  pub fn new(size_constraints: SizeConstraints, layout: ContainerLayout) -> Self {
+    Self {
+      base: GuiControlBase::new(size_constraints),
+      layout,
+      children: Default::default(),
+      support_compression: false,
+    }
+  }
 
-   pub fn add_child<Control: GuiControl>(&mut self, control: Control) -> Rc<RefCell<Control>> {
-     let result = Rc::new(RefCell::new(control));
-     self.children.push(result.clone());
-     result
-   }
+  pub fn compressed(mut self) -> Self {
+    self.support_compression = true;
+    self
+  }
+
+  pub fn add_child<Control: GuiControl>(&mut self, control: Control) -> Rc<RefCell<Control>> {
+    let (untyped, typed) = GuiSystem::create_rc_by_control(control);
+    self.children.push(untyped);
+    typed
+  }
+
+  pub fn delete_child(&mut self, control: &Rc<RefCell<dyn GuiControl>>) {
+    let control_base = control.borrow_mut().get_base_mut() as *const _;
+    self.children.retain(|child| {
+      let child = child.borrow_mut().get_base_mut() as *const _;
+      control_base != child
+    });
+  }
 }
 
 macro_rules! set_layout {
@@ -348,7 +58,7 @@ macro_rules! set_layout {
     let mut sum_relative = 0;
     let mut sum_absolute = 0;
     for child in &$self.children {
-      let child_size_constraints = child.borrow_mut().get_base_mut().size_constraints;
+      let child_size_constraints = child.borrow_mut().get_base_mut().current_size_constraints;
       sum_relative += child_size_constraints.$index1.relative;
       sum_absolute += child_size_constraints.$index1.absolute;
     }
@@ -365,7 +75,7 @@ macro_rules! set_layout {
 
     for child in &$self.children {
       let mut child = child.borrow_mut();
-      let child_size_constraints = child.get_base_mut().size_constraints;
+      let child_size_constraints = child.get_base_mut().current_size_constraints;
       sum_child_absolute += child_size_constraints.$index1.absolute;
       sum_child_relative += child_size_constraints.$index1.relative;
 
@@ -406,6 +116,10 @@ impl GuiControl for Container {
         return true;
       }
       GuiMessage::UpdateSizeConstraints(size_constraints) => {
+        if self.support_compression {
+          return true;
+        }
+
         let child_real_constraints: Vec<_> = self.children.iter_mut().map(|c|
           GuiSystem::get_size_constraints(c.borrow_mut().deref_mut())
         ).collect();
@@ -426,10 +140,11 @@ impl GuiControl for Container {
           },
         }
 
-        size_constraints.0.absolute = max(size_constraints.0.absolute, minimal_size.0);
-        size_constraints.1.absolute = max(size_constraints.1.absolute, minimal_size.1);
+        self.base.current_size_constraints.0.absolute = max(self.base.size_constraints.0.absolute, minimal_size.0);
+        self.base.current_size_constraints.1.absolute = max(self.base.size_constraints.1.absolute, minimal_size.1);
+        *size_constraints = self.base.current_size_constraints;
         return true;
-      },
+      }
       GuiMessage::RectUpdated => {
         match self.layout {
           ContainerLayout::Horizontal => {
@@ -440,17 +155,17 @@ impl GuiControl for Container {
           }
         }
         return true;
-      },
-      GuiMessage::Draw(draw_context) => {
+      }
+      GuiMessage::Draw(buf, theme) => {
         if self.base.visible {
           for child in &self.children {
             let mut child = child.borrow_mut();
             let rect = child.get_base_mut().rect;
-            let mut context_for_child = draw_context.window(
+            let mut buf_for_child = buf.window_mut(
               position_to_image_size(self.base.rect.relative(rect.left_top)),
               position_to_image_size(self.base.rect.relative(rect.right_bottom))
             );
-            child.on_message(GuiMessage::Draw(&mut context_for_child));
+            child.on_message(GuiMessage::Draw(&mut buf_for_child, theme));
           }
         }
         return true;
@@ -463,14 +178,12 @@ impl GuiControl for Container {
 #[derive(Debug)]
 pub struct ColorBox {
   base: GuiControlBase,
-  color: u32,
 }
 
 impl ColorBox {
-  pub fn new(size_constraints: SizeConstraints, color: u32) -> Self {
+  pub fn new(size_constraints: SizeConstraints) -> Self {
     Self {
       base: GuiControlBase::new(size_constraints),
-      color,
     }
   }
 }
@@ -482,11 +195,11 @@ impl GuiControl for ColorBox {
 
   fn on_message(&mut self, m: GuiMessage) -> bool {
     match m {
-      GuiMessage::Draw(draw_context) => {
+      GuiMessage::Draw(buf, theme) => {
         if self.base.visible {
-          let dst = &mut draw_context.buffer;
-          dst.fill(|p| *p = (((*p ^ self.color) & 0xFEFEFE) >> 1) + (*p & self.color));
+          buf.fill(|d| *d = theme.splitter);
         }
+
         return true;
       },
       _ => return false,
@@ -494,20 +207,12 @@ impl GuiControl for ColorBox {
   }
 }
 
-fn _to_black_1_2(p: &mut u32) {*p -= (*p & 0xFEFEFE) >> 1;}
-fn to_black_1_4(p: &mut u32) {*p -= (*p & 0xFCFCFC) >> 2;}
-fn to_black_1_8(p: &mut u32) {*p -= (*p & 0xF8F8F8) >> 3;}
-
-fn to_white_3_4(p: &mut u32) {*p = ((*p & 0xFCFCFC) >> 2) + 0xC0C0C0;}
-fn to_white_1_2(p: &mut u32) {*p += ((0xFFFFFF - *p) & 0xFEFEFE) >> 1;}
-fn _to_white_1_4(p: &mut u32) {*p += ((0xFFFFFF - *p) & 0xFCFCFC) >> 2;}
-fn _to_white_1_8(p: &mut u32) {*p += ((0xFFFFFF - *p) & 0xF8F8F8) >> 3;}
-
+#[derive(Clone)]
 pub struct Callback(Rc<dyn Fn() + 'static>);
 
 impl std::fmt::Debug for Callback {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      f.pad("Callbacl")
+      f.pad("Callback")
   }
 }
 
@@ -518,6 +223,8 @@ pub struct Button {
   font: Font,
   text: String,
   callback: Option<Callback>,
+  check_box: bool,
+  button_group: Option<bool>,
 }
 
 impl Button {
@@ -525,9 +232,11 @@ impl Button {
     Self {
       base: GuiControlBase::new(size_constraints),
       holded_when_pushed: false,
-      font: font.layout_vertical(TextLayoutVertical::MIDDLE).layout_horizontal(TextLayoutHorizontal::MIDDLE),
+      font: font.layout_vertical(TextLayoutVertical::MIDDLE).layout_horizontal(TextLayoutHorizontal::LEFT),
       text,
       callback: None,
+      check_box: false,
+      button_group: None,
     }
   }
 
@@ -539,6 +248,11 @@ impl Button {
     self.set_callback(callback);
     self
   }
+
+  pub fn check_box(mut self) -> Self {
+    self.check_box = true;
+    self
+  }
 }
 
 impl GuiControl for Button {
@@ -548,29 +262,53 @@ impl GuiControl for Button {
 
   fn on_message(&mut self, m: GuiMessage) -> bool {
     match m {
-      GuiMessage::Draw(draw_context) => {
+      GuiMessage::Draw(buf, theme) => {
         if self.base.visible {
-          let size = draw_context.buffer.get_size();
+          let size = buf.get_size();
           if size.0 > 0 && size.1 > 0 {
-            let dst = &mut draw_context.buffer;
-            if self.base.pressed || self.base.highlight {
-              dst.fill(to_black_1_8);
+            if self.base.checked {
+              buf.fill(|d| *d = avg_color(theme.selected, *d));
             }
 
-            let mut caption_position = (dst.get_size().0 as i32 / 2, dst.get_size().1 as i32 / 2);
+            if self.base.pressed {
+              buf.fill(|d| *d = avg_color(theme.pressed, *d));
+            } else if self.base.highlight {
+              buf.fill(|d| *d = avg_color(theme.highlight, *d));
+            }
+
+            let check_symbol = if self.button_group.is_some() {"●"} else if self.check_box {"V"} else {""};
+            let check_width = min(self.font.get_size(check_symbol).0 * 2, buf.get_size().0);
+            let mut caption_dst = buf.window_mut((check_width, 0), buf.get_size());
+            let with_checks = self.button_group.is_some() || self.check_box;
+
+            let mut caption_position = (if with_checks {0} else {(caption_dst.get_size().0 - check_width) as i32 / 2}, caption_dst.get_size().1 as i32 / 2);
             if self.base.pressed && self.holded_when_pushed {
               caption_position.0 += 1;
               caption_position.1 += 1;
             }
-            self.font.draw(&self.text, caption_position, dst);
+
+            let font = if with_checks { self.font.clone() } else { self.font.layout_horizontal(TextLayoutHorizontal::MIDDLE) };
+            font.color(theme.font).draw(&self.text, caption_position, &mut caption_dst);
+
+            let check_symbol = if self.button_group.is_some() {
+              if self.base.checked {"●"} else {"○"}
+            } else if self.check_box {
+              if self.base.checked {"V"} else {"□"}
+            } else {
+              ""
+            };
+
+            let mut check_dst = buf.window_mut((0, 0), (check_width, buf.get_size().1));
+            let check_position = (check_dst.get_size().0 as i32 / 2, check_dst.get_size().1 as i32 / 2);
+            self.font.color(theme.font).layout_horizontal(TextLayoutHorizontal::MIDDLE).draw(check_symbol, check_position, &mut check_dst);
           }
         }
         return false;
-      },
+      }
       GuiMessage::MouseDown(_) => {
         self.holded_when_pushed = true;
         return true;
-      },
+      }
       GuiMessage::MouseMove(position) => {
         if self.base.pressed {
           let prev_holded_when_pushed = self.holded_when_pushed;
@@ -580,99 +318,16 @@ impl GuiControl for Button {
           return false;
         }
       }
-      GuiMessage::MouseUp(position) => { 
+      GuiMessage::MouseUp(position, job_system) => { 
         if self.base.rect.contains(position) {
+          if self.check_box {
+            self.base.checked = !self.base.checked;
+          }
           if let Some(Callback(callback)) = &self.callback {
-            callback();
-          }
-        }
-        return true;
-      }
-      _ => return false,
-    }
-  }
-}
-
-#[derive(Debug)]
-pub struct CheckBox {
-  base: GuiControlBase,
-  holded_when_pushed: bool,
-  font: Font,
-  text: String,
-  checked: bool,
-}
-
-impl CheckBox {
-  pub fn new(size_constraints: SizeConstraints, text: String, font: Font) -> Self {
-    Self {
-      base: GuiControlBase::new(size_constraints),
-      holded_when_pushed: false,
-      font: font.layout_vertical(TextLayoutVertical::MIDDLE).layout_horizontal(TextLayoutHorizontal::MIDDLE),
-      text,
-      checked: false,
-    }
-  }
-}
-
-impl GuiControl for CheckBox {
-  fn get_base_mut(&mut self) -> &mut GuiControlBase {
-    &mut self.base
-  }
-
-  fn on_message(&mut self, m: GuiMessage) -> bool {
-    match m {
-      GuiMessage::Draw(draw_context) => {
-        if self.base.visible {
-          let size = draw_context.buffer.get_size();
-          if size.0 > 0 && size.1 > 0 {
-            let dst = &mut draw_context.buffer;
-            if self.checked {
-              dst.fill(to_white_1_2);
-            }
-
-            if self.base.pressed || self.base.highlight {
-              if self.checked {
-                dst.fill(to_white_1_2);
-              } else {
-                dst.fill(to_black_1_8);
-              }
-            }
-
-            let check_width = self.font.get_size("V").0 * 2;
-
-            let mut font_dst = dst.window_mut((0, 0), (dst.get_size().0 - check_width, dst.get_size().1));
-            let mut caption_position = (font_dst.get_size().0 as i32 / 2, font_dst.get_size().1 as i32 / 2);
-            if self.base.pressed && self.holded_when_pushed {
-              caption_position.0 += 1;
-              caption_position.1 += 1;
-            }
-            self.font.draw(&self.text, caption_position, &mut font_dst);
-
-            if self.checked {
-              let mut check_dst = dst.window_mut((dst.get_size().0 - check_width, 0), dst.get_size());
-              let check_position = (check_dst.get_size().0 as i32 / 2, check_dst.get_size().1 as i32 / 2);
-              self.font.draw("V", check_position, &mut check_dst);
+            if let Some(job_system) = job_system.upgrade() {
+              job_system.borrow_mut().add_callback(callback.clone());
             }
           }
-        }
-        return false;
-      },
-      GuiMessage::MouseDown(_) => {
-        self.holded_when_pushed = true;
-        return true;
-      },
-      GuiMessage::MouseMove(position) => {
-        if self.base.pressed {
-          let prev_holded_when_pushed = self.holded_when_pushed;
-          self.holded_when_pushed = self.base.rect.contains(position);
-          return self.holded_when_pushed != prev_holded_when_pushed;
-        } else {
-          return false;
-        }
-      }
-      GuiMessage::MouseUp(position) => { 
-        if self.base.rect.contains(position) {
-          self.checked = !self.checked;
         }
         return true;
       }
@@ -757,19 +412,19 @@ impl GuiControl for Edit {
 
   fn on_message(&mut self, m: GuiMessage) -> bool {
     match m {
-      GuiMessage::Draw(draw_context) => {
+      GuiMessage::Draw(buf, theme) => {
         if self.base.visible {
-          let dst = &mut draw_context.buffer;
-          let (x, y) = dst.get_size();
+          let (x, y) = buf.get_size();
           if x > 2 && y > 2 {
-            dst.window_mut((0, 0), (x, 1)).fill(|p| *p = 0);
-            dst.window_mut((0, y - 1), (x, y)).fill(|p| *p = 0);
-            dst.window_mut((0, 1), (1, y - 1)).fill(|p| *p = 0);
-            dst.window_mut((x - 1, 1), (x, y - 1)).fill(|p| *p = 0);
-            let mut inner = dst.window_mut((1, 1), (x - 1, y - 1));
+            let border_color = theme.font;
+            buf.window_mut((0, 0), (x, 1)).fill(|p| *p = border_color);
+            buf.window_mut((0, y - 1), (x, y)).fill(|p| *p = border_color);
+            buf.window_mut((0, 1), (1, y - 1)).fill(|p| *p = border_color);
+            buf.window_mut((x - 1, 1), (x, y - 1)).fill(|p| *p = border_color);
+            let mut inner = buf.window_mut((1, 1), (x - 1, y - 1));
 
             if self.base.focus {
-              inner.fill(|p| *p = 0xFFFFFF);
+              inner.fill(|d| *d = avg_color(*d, theme.edit_focused));
 
               let text_before_cursor: String = self
                 .text[self.scroll_position as usize .. self.cursor_position as usize]
@@ -777,12 +432,12 @@ impl GuiControl for Edit {
                 .collect();
               let cursor_position = self.font.get_size(&text_before_cursor).0;
               if cursor_position + 2 <= x - 2 {
-                inner.window_mut((cursor_position, 0), (cursor_position + 2, y - 2)).fill(|p| *p = 0);
+                inner.window_mut((cursor_position, 0), (cursor_position + 2, y - 2)).fill(|p| *p = border_color);
               }
             } else if self.base.highlight {
-              inner.fill(to_white_3_4);
+              inner.fill(|d| *d = avg_color(*d, theme.edit_highlight));
             } else {
-              inner.fill(to_white_1_2);
+              inner.fill(|d| *d = avg_color(*d, theme.inactive));
             }
 
             let mut visible_text = String::new();
@@ -802,12 +457,12 @@ impl GuiControl for Edit {
               pos += 1;
             }
 
-            self.font.draw(&visible_text, (1, (y / 2) as i32), &mut inner);
+            self.font.color(theme.font).draw(&visible_text, (1, (y / 2) as i32), &mut inner);
           }
         }
 
         return true;
-      },
+      }
       GuiMessage::MouseDown(position) => {
         let mut width_before_mouse = 0;
         let mut char_index = self.scroll_position;
@@ -823,10 +478,10 @@ impl GuiControl for Edit {
         }
         self.cursor_position = char_index;
         return true;
-      },
-      GuiMessage::MouseUp(_) => {
+      }
+      GuiMessage::MouseUp(_, _) => {
         return true;
-      },
+      }
       GuiMessage::Char(c) => { 
         if Self::char_is_valid(c) {
           self.text.insert(self.cursor_position as usize, c);
@@ -837,7 +492,7 @@ impl GuiControl for Edit {
           return self.paste();
         }
         return false;
-      },
+      }
       GuiMessage::KeyDown(k) => {
         match k {
           Key::Left => if self.cursor_position > 0 {
@@ -866,7 +521,7 @@ impl GuiControl for Edit {
         }
     
         return false;
-      },
+      }
       _ => return false,
     }
   }
@@ -941,7 +596,7 @@ impl GuiControl for ScrollV {
 
   fn on_message(&mut self, m: GuiMessage) -> bool {
     match m {
-      GuiMessage::Draw(draw_context) => {
+      GuiMessage::Draw(buf, theme) => {
         if self.base.visible {
           self.scroll_range = max(1, self.scroll_range);
           self.content_size = max(1, min(self.content_size, self.scroll_range));
@@ -951,59 +606,44 @@ impl GuiControl for ScrollV {
             return true;
           }
 
-          let dst = &mut draw_context.buffer;
-
           if self.very_small() {
-            dst.fill(to_white_1_2);
+            buf.fill(|d| *d = avg_color(*d, theme.inactive));
             return true;
           }
 
           let (button_size, button_shift) = self.get_button_size_and_shift();
 
           macro_rules! top_scroll {
-            () => {dst.window_mut((0, 0), (dst.get_size().0, button_shift as usize))};
+            () => {buf.window_mut((0, 0), (buf.get_size().0, button_shift as usize))};
           }
 
           macro_rules! button_scroll {
-            () => {dst.window_mut((0, button_shift as usize), (dst.get_size().0, (button_size + button_shift) as usize))};
+            () => {buf.window_mut((0, button_shift as usize), (buf.get_size().0, (button_size + button_shift) as usize))};
           }
 
           macro_rules! bottom_scroll {
-            () => {dst.window_mut((0, (button_size + button_shift) as usize), dst.get_size())};
+            () => {buf.window_mut((0, (button_size + button_shift) as usize), buf.get_size())};
           }
 
           if self.base.pressed {
-            match self.scroll_state {
-              ScrollState::Less => top_scroll!().fill(|p| *p = 0xFFFFFF),
-              _ => top_scroll!().fill(to_white_1_2),
-            }
-            match self.scroll_state {
-              ScrollState::Greater => bottom_scroll!().fill(|p| *p = 0xFFFFFF),
-              _ => bottom_scroll!().fill(to_white_1_2),
-            }
-            button_scroll!().fill(to_black_1_4);
+            top_scroll!().fill(|d| *d = avg_color(*d, theme.highlight));
+            bottom_scroll!().fill(|d| *d = avg_color(*d, theme.highlight));
+            button_scroll!().fill(|d| *d = avg_color(*d, theme.pressed));
           } else if self.base.highlight {
-            match self.scroll_state {
-              ScrollState::Less => top_scroll!().fill(to_white_3_4),
-              _ => top_scroll!().fill(to_white_1_2),
-            }
-            match self.scroll_state {
-              ScrollState::Greater => bottom_scroll!().fill(to_white_3_4),
-              _ => bottom_scroll!().fill(to_white_1_2),
-            }
-            button_scroll!().fill(to_black_1_8);
+            top_scroll!().fill(|d| *d = avg_color(*d, theme.inactive));
+            bottom_scroll!().fill(|d| *d = avg_color(*d, theme.inactive));
+            button_scroll!().fill(|d| *d = avg_color(*d, theme.highlight));
           } else {
-            top_scroll!().fill(to_white_1_2);
-            bottom_scroll!().fill(to_white_1_2);
+            button_scroll!().fill(|d| *d = avg_color(*d, theme.inactive));
           }
         }
         return true;
-      },
+      }
       GuiMessage::MouseWheel(_, delta) => {
         let old_scroll_position = self.scroll_position;
         self.scroll_position = max(0, min(self.scroll_range - self.content_size, self.scroll_position + delta));
         return old_scroll_position != self.scroll_position;
-      },
+      }
       GuiMessage::MouseDown(position) => {
         self.set_in_button(position);
         match self.scroll_state {
@@ -1014,7 +654,7 @@ impl GuiControl for ScrollV {
 
         self.scroll_position = max(0, min(self.scroll_range - self.content_size, self.scroll_position));
         return true;
-      },
+      }
       GuiMessage::MouseMove(position) => {
         if self.base.pressed {
           match self.scroll_state {
@@ -1036,12 +676,10 @@ impl GuiControl for ScrollV {
             }
           } 
         } else {
-          let prev_in_button = self.scroll_state;
-          self.set_in_button(position);
-          return std::mem::discriminant(&prev_in_button) != std::mem::discriminant(&self.scroll_state);
+          return false;
         }
-      },
-      GuiMessage::MouseUp(_) => {
+      }
+      GuiMessage::MouseUp(_, _) => {
         return true;
       },
       _ => return false,
@@ -1070,7 +708,7 @@ impl ListBox {
   }
 
   fn get_item_height(&self) -> i32 {
-    self.font.get_size("M").1 as i32 * 2 / 2
+    self.font.get_size("M").1 as i32 * 5 / 4
   }
 }
 
@@ -1086,35 +724,226 @@ impl GuiControl for ListBox {
         *scroll_rect = self.base.rect;
         scroll_rect.left_top.0 = max(scroll_rect.left_top.0, scroll_rect.right_bottom.0 - self.scroll_width);
         return true;
-      },
-      GuiMessage::Draw(draw_context) => {
+      }
+      GuiMessage::Draw(buf, theme) => {
         self.scroll.base.highlight = self.base.highlight;
         self.scroll.base.focus = self.base.focus;
         self.scroll.base.pressed = self.base.pressed;
         let total_height = self.base.rect.right_bottom.1 - self.base.rect.left_top.1;
-        let item_count = (total_height + self.get_item_height() / 2) / self.get_item_height();
+        let item_count = (total_height + self.get_item_height() / 2) / max(self.get_item_height(), 1);
 
         self.scroll.content_size = item_count - 1;
         self.scroll.scroll_range = self.lines.len() as i32;
         let scroll_rect = self.scroll.base.rect;
-        let mut context_for_child = draw_context.window(
+        let mut buf_for_child = buf.window_mut(
           position_to_image_size(self.base.rect.relative(scroll_rect.left_top)),
           position_to_image_size(self.base.rect.relative(scroll_rect.right_bottom))
         );
-        let scroll_result = self.scroll.on_message(GuiMessage::Draw(&mut context_for_child));
+        let scroll_result = self.scroll.on_message(GuiMessage::Draw(&mut buf_for_child, theme));
 
         let first_line = min(max(0, self.scroll.scroll_position) as usize, self.lines.len());
         let last_line = min(first_line + (item_count + 1) as usize, self.lines.len());
         let mut position = (0, 0);
         for line in self.lines[first_line .. last_line].iter() {
-          self.font.draw(&line, position, &mut draw_context.buffer);
+          self.font.color(theme.font).draw(&line, position, buf);
           position.1 += self.get_item_height();
         }
 
-
         return scroll_result;
-      },
+      }
       _ => return self.scroll.on_message(m),
+    }
+  }
+}
+
+#[derive(Debug)]
+struct TabControlItem {
+  caption: String,
+  width: i32,
+  button: Rc<RefCell<Button>>,
+  container: Rc<RefCell<dyn GuiControl>>,
+}
+
+#[derive(Debug)]
+pub struct TabControl {
+  base: GuiControlBase,
+  height: i32,
+  children: Vec<TabControlItem>,
+  selected_tab_index: Rc<RefCell<usize>>,
+  font: Font,
+}
+
+impl TabControl {
+  pub fn new(height: i32, font: Font) -> Self {
+    Self {
+      base: GuiControlBase::new(SizeConstraints(
+          SizeConstraint::flexible(0),
+          SizeConstraint::fixed(height + 1),
+      )),
+      height,
+      children: vec![],
+      selected_tab_index: Rc::new(RefCell::new(0)),
+      font,
+    }
+  }
+
+  pub fn add_tab<Control: GuiControl>(&mut self, caption: String, width: i32, control: Control) -> Rc<RefCell<Control>> {
+    let (untyped, typed) = GuiSystem::create_rc_by_control(control);
+    let new_index = self.children.len();
+    let tab_index_capture = Rc::downgrade(&self.selected_tab_index);
+    let button = Button::new(
+      SizeConstraints(
+        SizeConstraint::fixed(width),
+        SizeConstraint::fixed(self.height),
+      ),
+      caption.clone(), 
+      self.font.clone(),
+    ).callback(move || {
+      tab_index_capture.upgrade().map(|p| *p.borrow_mut() = new_index);
+    });
+    self.children.push(TabControlItem{
+      caption,
+      width,
+      button: Rc::new(RefCell::new(button)),
+      container: untyped,
+    });
+    typed
+  }
+
+  pub fn get_selected_tab(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
+    self.children.get(*self.selected_tab_index.borrow().deref()).map(|t| t.container.clone())
+  }
+}
+
+impl GuiControl for TabControl {
+  fn get_base_mut(&mut self) -> &mut GuiControlBase {
+    &mut self.base
+  }
+
+  fn on_message(&mut self, m: GuiMessage) -> bool {
+    match m {
+      GuiMessage::FindDestination(dest, position) => {
+        if let Some(t) = self.children.iter().find(|t|
+          t.button.borrow_mut().get_base_mut().rect.contains(position)
+        ) {
+          let child_as_dyn: Rc<RefCell<dyn GuiControl + 'static>> = t.button.clone();
+          *dest = GuiSystem::get_child(&child_as_dyn, position);
+        }
+
+        if let Some(selected_tab) = self.get_selected_tab() {
+          if selected_tab.borrow_mut().get_base_mut().rect.contains(position) {
+            *dest = GuiSystem::get_child(&selected_tab, position);
+          }
+        }
+
+        return true;
+      }
+      GuiMessage::UpdateSizeConstraints(size_constraints) => {
+        if let Some(selected_tab) = self.get_selected_tab() {
+          self.base.current_size_constraints = GuiSystem::get_size_constraints(selected_tab.borrow_mut().deref_mut());
+          self.base.current_size_constraints.1.absolute += 1 + self.height;
+        } else {
+          self.base.current_size_constraints = SizeConstraints(
+            SizeConstraint::flexible(0),
+            SizeConstraint::fixed(1 + self.height),
+          )
+        }
+
+        self.base.current_size_constraints.0.absolute = max(
+          self.base.current_size_constraints.0.absolute, 
+          self.children.iter().fold(0, |acc, t| acc + t.width)
+        );
+
+        *size_constraints = self.base.current_size_constraints;
+        return true;
+      }
+      GuiMessage::RectUpdated => {
+        let rect = self.base.rect;
+        let size = (rect.right_bottom.0 - rect.left_top.0, rect.right_bottom.1 - rect.left_top.1);
+        if self.children.len() > 0 {
+          if size.0 == 0 {
+            let button_rect = Rect { left_top: (0, 0), right_bottom: (0, 0)};
+            for t in &self.children {
+              GuiSystem::set_rect(t.button.borrow_mut().deref_mut(), button_rect);
+            }
+          } else {
+            let sum_width = self.children.iter().fold(0, |acc, t| acc + t.width);
+            let real_width = min(size.0, sum_width);
+            let mut button_rect = Rect { left_top: (0, 0), right_bottom: (0, self.height)};
+            let mut current_sum_width = 0;
+            for t in &self.children {
+              button_rect.left_top.0 = button_rect.right_bottom.0;
+              current_sum_width += t.width;
+              button_rect.right_bottom.0 = current_sum_width * real_width / sum_width;
+              GuiSystem::set_rect(t.button.borrow_mut().deref_mut(), button_rect);
+            }
+          }
+
+        }
+        if let Some(selected_tab) = self.get_selected_tab() {
+          let mut selected_tab_rect = rect;
+          selected_tab_rect.left_top.1 = self.height + 1;
+          GuiSystem::set_rect(selected_tab.borrow_mut().deref_mut(), selected_tab_rect);
+        }
+        return true;
+      }
+      GuiMessage::Draw(buf, theme) => {
+        if self.base.visible {
+          let mut last_rect = 0;
+          for (i, t) in self.children.iter().enumerate() {
+            let mut child = t.button.borrow_mut();
+            let rect = child.get_base_mut().rect;
+            last_rect = max(last_rect, rect.right_bottom.0);
+            if i == *self.selected_tab_index.borrow() {
+              let mut rect_for_select = rect;
+              rect_for_select.right_bottom.1 += 1;
+              let mut buf_for_select = buf.window_mut(
+                position_to_image_size(self.base.rect.relative(rect_for_select.left_top)),
+                position_to_image_size(self.base.rect.relative(rect_for_select.right_bottom))
+              );
+              buf_for_select.fill(|d| *d = avg_color(theme.selected, *d));
+            } else {
+              let mut rect_for_select = rect;
+              rect_for_select.left_top.1 = rect_for_select.right_bottom.1;
+              rect_for_select.right_bottom.1 += 1;
+              let mut buf_for_select = buf.window_mut(
+                position_to_image_size(self.base.rect.relative(rect_for_select.left_top)),
+                position_to_image_size(self.base.rect.relative(rect_for_select.right_bottom))
+              );
+              buf_for_select.fill(|d| *d = theme.splitter);
+            }
+
+            let mut buf_for_child = buf.window_mut(
+              position_to_image_size(self.base.rect.relative(rect.left_top)),
+              position_to_image_size(self.base.rect.relative(rect.right_bottom))
+            );
+
+            child.on_message(GuiMessage::Draw(&mut buf_for_child, theme));
+          }
+
+          let rect_for_select = Rect{
+            left_top: (last_rect, self.height),
+            right_bottom: (self.base.rect.right_bottom.0, self.height + 1)
+          };
+          let mut buf_for_select = buf.window_mut(
+            position_to_image_size(self.base.rect.relative(rect_for_select.left_top)),
+            position_to_image_size(self.base.rect.relative(rect_for_select.right_bottom))
+          );
+          buf_for_select.fill(|d| *d = theme.splitter);
+
+          if let Some(selected_tab) = self.get_selected_tab() {
+            let mut child = selected_tab.borrow_mut();
+            let rect = child.get_base_mut().rect;
+            let mut buf_for_child = buf.window_mut(
+              position_to_image_size(self.base.rect.relative(rect.left_top)),
+              position_to_image_size(self.base.rect.relative(rect.right_bottom))
+            );
+            child.on_message(GuiMessage::Draw(&mut buf_for_child, theme));
+          }
+        }
+        return true;
+      },
+      _ => return false,
     }
   }
 }

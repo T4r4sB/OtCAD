@@ -1,9 +1,58 @@
-use application::clipboard::*;
 use application::draw_context::*;
 use application::font::*;
 use application::gui::*;
-use std::rc::Rc;
-use std::cell::RefCell;
+use application::gui::gui_components::*;
+
+use curves::curves::*;
+use curves::points::*;
+use curves::render::*;
+
+mod top_panel;
+mod bottom_panel;
+
+mod file_menu;
+mod draw_menu;
+mod group_menu;
+mod transform_menu;
+mod options_menu;
+
+use top_panel::*;
+use bottom_panel::*;
+
+#[derive(Debug)]
+pub struct CadView {
+  base: GuiControlBase,
+}
+
+impl CadView {
+  pub fn new(size_constraints: SizeConstraints,) -> Self {
+    Self {
+      base: GuiControlBase::new(size_constraints),
+    }
+  }
+}
+
+impl GuiControl for CadView {
+  fn get_base_mut(&mut self) -> &mut GuiControlBase {
+    &mut self.base
+  }
+
+  fn on_message(&mut self, m: GuiMessage) -> bool {
+    match m {
+      GuiMessage::Draw(buf, _) => {
+        if self.base.visible {
+          let curve = Curve::<f32>::circle(Point::new(100.0, 100.0), 50.0);
+          let e = Entity::Curve(curve);
+          let mut buffer = vec![(0, 0); buf.get_size().1 * 4];
+          draw_curve(buf, &e, 0, 1.0, &mut buffer, 4);
+        }
+
+        return true;
+      },
+      _ => return false,
+    }
+  }
+}
 
 #[derive(Default)]
 struct GuiTest {
@@ -12,14 +61,10 @@ struct GuiTest {
 impl window::Application for GuiTest {
   fn on_create(
     &mut self,
-    gui_system: &mut GuiSystem,
-    _clipboard: Rc<RefCell<dyn Clipboard>>, 
-    font_factory: &mut FontFactory,
+    context: &mut window::Context,
   ) {
-    let default_font = font_factory.new_font("Lucida Console", 14);
-    let hr_color = 0;
-
-    let root = gui_system.set_root(Container::new(
+    let default_font = context.font_factory.new_font("MS Sans Serif", 15, FontAliasingMode::TT);
+    let root = context.gui_system.set_root(Container::new(
       SizeConstraints(
         SizeConstraint::flexible(0),
         SizeConstraint::flexible(0),
@@ -27,254 +72,37 @@ impl window::Application for GuiTest {
       ContainerLayout::Vertical,
     ));
 
-    let _top_panel = root.borrow_mut().add_child(Container::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      ContainerLayout::Horizontal,
-    ));
+    create_top_panel(&mut root.borrow_mut(), &default_font);
+    let _hr = root.borrow_mut().add_child(ColorBox::new(SizeConstraints(
+      SizeConstraint::flexible(0),
+      SizeConstraint::fixed(1),
+    )));
+  
+    let _middle = root.borrow_mut().add_child(CadView::new(SizeConstraints(
+      SizeConstraint::flexible(100),
+      SizeConstraint::flexible(100),
+    )));
 
-    let _hr = root.borrow_mut().add_child(ColorBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(1),
-      ),
-      hr_color,
-    ));
-
-    let middle = root.borrow_mut().add_child(Container::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::flexible(100),
-      ),
-      ContainerLayout::Horizontal,
-    ));
-
-    let _hr = root.borrow_mut().add_child(ColorBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(1),
-      ),
-      hr_color,
-    ));
-
-    let bottom_panel = root.borrow_mut().add_child(Container::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(80),
-      ),
-      ContainerLayout::Horizontal,
-    ));
-
-    let left_panel = middle.borrow_mut().add_child(Container::new(
-      SizeConstraints(
-        SizeConstraint::fixed(100),
-        SizeConstraint::flexible(0),
-      ),
-      ContainerLayout::Vertical,
-    ));
-
-    let _hr = middle.borrow_mut().add_child(ColorBox::new(
-      SizeConstraints(
-        SizeConstraint::fixed(1),
-        SizeConstraint::flexible(0),
-      ),
-      hr_color,
-    ));
-
-    let _center = middle.borrow_mut().add_child(Container::new(
-      SizeConstraints(
-        SizeConstraint::flexible(200),
-        SizeConstraint::flexible(0),
-      ),
-      ContainerLayout::Vertical,
-    ));
-
-    let _hr = middle.borrow_mut().add_child(ColorBox::new(
-      SizeConstraints(
-        SizeConstraint::fixed(1),
-        SizeConstraint::flexible(0),
-      ),
-      hr_color,
-    ));
-
-    let right_panel = middle.borrow_mut().add_child(Container::new(
-      SizeConstraints(
-        SizeConstraint::fixed(150),
-        SizeConstraint::flexible(0),
-      ),
-      ContainerLayout::Vertical,
-    ));
-
-    let _line = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Линия".to_string(),
-      default_font.clone(),
-    ));
-
-    let _circle = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Окружность".to_string(),
-      default_font.clone(),
-    ));
-
-    let _arc = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Дуга".to_string(),
-      default_font.clone(),
-    ));
-
-    let _hr = left_panel.borrow_mut().add_child(ColorBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(1),
-      ),
-      hr_color,
-    ));
-
-    let _enlarge = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Удлинить".to_string(),
-      default_font.clone(),
-    ));
-
-    let _cut = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Обрезать".to_string(),
-      default_font.clone(),
-    ));
-
-    let _hr = left_panel.borrow_mut().add_child(ColorBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(1),
-      ),
-      hr_color,
-    ));
-
-    let _move = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Переместить".to_string(),
-      default_font.clone(),
-    ));
-
-    let _rotate = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Повернуть".to_string(),
-      default_font.clone(),
-    ));
-
-    let _copy = left_panel.borrow_mut().add_child(Button::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Скопировать".to_string(),
-      default_font.clone(),
-    ));
-
-    let _grid = right_panel.borrow_mut().add_child(CheckBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Показать сетку".to_string(),
-      default_font.clone(),
-    ));
-
-    let _hr = right_panel.borrow_mut().add_child(ColorBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(1),
-      ),
-      hr_color,
-    ));
-
-    let _vertex = right_panel.borrow_mut().add_child(CheckBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Вершины".to_string(),
-      default_font.clone(),
-    ));
-
-    let _coord = right_panel.borrow_mut().add_child(CheckBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Узлы сетки".to_string(),
-      default_font.clone(),
-    ));
-
-    let _intersections = right_panel.borrow_mut().add_child(CheckBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Пересечения".to_string(),
-      default_font.clone(),
-    ));
-
-    let _centers = right_panel.borrow_mut().add_child(CheckBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(20),
-      ),
-      "Центры".to_string(),
-      default_font.clone(),
-    ));
-
-    let sv = bottom_panel.borrow_mut().add_child(ListBox::new(
-      SizeConstraints(
-        SizeConstraint::flexible(160),
-        SizeConstraint::flexible(0),
-      ),
-      16,
-      default_font.clone(),
-    ));
-
-    sv.borrow_mut().lines.push("Lorem".to_string());
-    sv.borrow_mut().lines.push("Ipsum".to_string());
-    sv.borrow_mut().lines.push("Lorem Ipsum".to_string());
-    sv.borrow_mut().lines.push("Я пишу по-русски".to_string());
-    sv.borrow_mut().lines.push("Ещё линия".to_string());
-    sv.borrow_mut().lines.push("Ещё линия очень очень большой длины чтоб посмотреть что получится из этого".to_string());
+    let _hr = root.borrow_mut().add_child(ColorBox::new(SizeConstraints(
+      SizeConstraint::flexible(0),
+      SizeConstraint::fixed(1),
+    )));
+  
+    create_bottom_panel(&mut root.borrow_mut(), &default_font);
   }
 
   fn on_draw(
-    &mut self,
+    &self,
     draw_context: &mut DrawContext,
   ) {
-    draw_context.buffer.fill(|p| *p = 0xDDBB99);
+    draw_context.buffer.fill(|p| {
+      *p = 0xFFFFFF;
+    });
   }
 }
 
 fn main() {
-  if let Err(_) = window::run_application(Box::new(GuiTest::default())) {
+  if let Err(_) = window::run_application("ОТКАД", Box::new(GuiTest::default())) {
     // Do nothing, read message and exit
   }
 }
