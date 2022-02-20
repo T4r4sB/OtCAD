@@ -62,7 +62,6 @@ pub struct GuiControlBase {
     pub(crate) focus: bool,
     pub(crate) highlight: bool,
     pub(crate) pressed: bool,
-    pub(crate) checked: bool,
     pub(crate) rect: Rect,
 }
 
@@ -76,7 +75,6 @@ impl GuiControlBase {
             focus: false,
             highlight: false,
             pressed: false,
-            checked: false,
             rect: Rect::default(),
         }
     }

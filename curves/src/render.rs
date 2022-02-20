@@ -369,17 +369,23 @@ fn use_quadrant_bounds_aa4(
     ybounds: (usize, usize),
     color: u32,
 ) {
-    let crb = color & 0xff00ff;
-    let cg = color & 0xff00;
+    let cr = color & 0x000000ff;
+    let cg = color & 0x0000ff00;
+    let cb = color & 0x00ff0000;
+    let ca = color & 0xff000000;
     for y in ybounds.0..ybounds.1 {
         let line = &mut dst[y / 4];
         for x in buffer[y].0..buffer[y].1 {
             let dst = &mut line[x / 4];
-            let drb = *dst & 0xff00ff;
-            let dg = *dst & 0xff00;
-            let rrb = u32::wrapping_add(drb, u32::wrapping_sub(crb, drb) >> 4) & 0xff00ff;
-            let rg = u32::wrapping_add(dg, u32::wrapping_sub(cg, dg) >> 4) & 0xff00;
-            *dst = rrb | rg;
+            let dr = *dst & 0x000000ff;
+            let dg = *dst & 0x0000ff00;
+            let db = *dst & 0x00ff0000;
+            let da = *dst & 0xff000000;
+            let rr = u32::wrapping_add(dr, u32::wrapping_sub(cr, dr) >> 4) & 0x000000ff;
+            let rg = u32::wrapping_add(dg, u32::wrapping_sub(cg, dg) >> 4) & 0x0000ff00;
+            let rb = u32::wrapping_add(db, u32::wrapping_sub(cb, db) >> 4) & 0x00ff0000;
+            let ra = u32::wrapping_add(da, u32::wrapping_sub(ca, da) >> 4) & 0xff000000;
+            *dst = rr | rg | rb | ra;
         }
     }
 }

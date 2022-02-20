@@ -59,9 +59,10 @@ struct GuiTest {}
 
 impl window::Application for GuiTest {
     fn on_create(&mut self, context: &mut window::Context) {
-        let default_font = context
-            .font_factory
-            .new_font("MS Sans Serif", 15, FontAliasingMode::TT);
+        let default_font =
+            context
+                .font_factory
+                .new_font("MS Sans Serif", 31, FontAliasingMode::NoAA);
         let root = context.gui_system.set_root(Container::new(
             SizeConstraints(SizeConstraint::flexible(0), SizeConstraint::flexible(0)),
             ContainerLayout::Vertical,

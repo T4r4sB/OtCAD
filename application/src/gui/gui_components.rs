@@ -227,14 +227,20 @@ impl std::fmt::Debug for Callback {
 }
 
 #[derive(Debug)]
+enum ButtonCheckState {
+    None,
+    CheckBox(bool),
+    RadioButton(bool),
+}
+
+#[derive(Debug)]
 pub struct Button {
     base: GuiControlBase,
     holded_when_pushed: bool,
     font: Font,
     text: String,
     callback: Option<Callback>,
-    check_box: bool,
-    button_group: Option<bool>,
+    check_state: ButtonCheckState,
 }
 
 impl Button {
@@ -247,8 +253,7 @@ impl Button {
                 .layout_horizontal(TextLayoutHorizontal::LEFT),
             text,
             callback: None,
-            check_box: false,
-            button_group: None,
+            check_state: ButtonCheckState::None,
         }
     }
 
@@ -262,8 +267,57 @@ impl Button {
     }
 
     pub fn check_box(mut self) -> Self {
-        self.check_box = true;
+        self.check_state = ButtonCheckState::CheckBox(false);
         self
+    }
+
+    pub fn radio_button(mut self) -> Self {
+        self.check_state = ButtonCheckState::RadioButton(false);
+        self
+    }
+
+    fn has_checks(&self) -> bool {
+        match self.check_state {
+            ButtonCheckState::None => false,
+            ButtonCheckState::CheckBox(_) => true,
+            ButtonCheckState::RadioButton(_) => true,
+        }
+    }
+
+    fn checked(&self) -> bool {
+        match self.check_state {
+            ButtonCheckState::None => false,
+            ButtonCheckState::CheckBox(c) => c,
+            ButtonCheckState::RadioButton(c) => c,
+        }
+    }
+
+    fn default_check_symbol(&self) -> &'static str {
+        match self.check_state {
+            ButtonCheckState::None => "",
+            ButtonCheckState::CheckBox(_) => "V",
+            ButtonCheckState::RadioButton(_) => "●",
+        }
+    }
+
+    fn check_symbol(&self) -> &'static str {
+        match self.check_state {
+            ButtonCheckState::None => "",
+            ButtonCheckState::CheckBox(c) => {
+                if c {
+                    "V"
+                } else {
+                    "□"
+                }
+            }
+            ButtonCheckState::RadioButton(c) => {
+                if c {
+                    "●"
+                } else {
+                    "○"
+                }
+            }
+        }
     }
 }
 
@@ -278,7 +332,7 @@ impl GuiControl for Button {
                 if self.base.visible {
                     let size = buf.get_size();
                     if size.0 > 0 && size.1 > 0 {
-                        if self.base.checked {
+                        if self.checked() {
                             buf.fill(|d| *d = avg_color(theme.selected, *d));
                         }
 
@@ -288,17 +342,11 @@ impl GuiControl for Button {
                             buf.fill(|d| *d = avg_color(theme.highlight, *d));
                         }
 
-                        let check_symbol = if self.button_group.is_some() {
-                            "●"
-                        } else if self.check_box {
-                            "V"
-                        } else {
-                            ""
-                        };
+                        let check_symbol = self.default_check_symbol();
                         let check_width =
                             min(self.font.get_size(check_symbol).0 * 2, buf.get_size().0);
                         let mut caption_dst = buf.window_mut((check_width, 0), buf.get_size());
-                        let with_checks = self.button_group.is_some() || self.check_box;
+                        let with_checks = self.has_checks();
 
                         let mut caption_position = (
                             if with_checks {
@@ -321,21 +369,7 @@ impl GuiControl for Button {
                         font.color(theme.font)
                             .draw(&self.text, caption_position, &mut caption_dst);
 
-                        let check_symbol = if self.button_group.is_some() {
-                            if self.base.checked {
-                                "●"
-                            } else {
-                                "○"
-                            }
-                        } else if self.check_box {
-                            if self.base.checked {
-                                "V"
-                            } else {
-                                "□"
-                            }
-                        } else {
-                            ""
-                        };
+                        let check_symbol = self.check_symbol();
 
                         let mut check_dst = buf.window_mut((0, 0), (check_width, buf.get_size().1));
                         let check_position = (
@@ -365,8 +399,8 @@ impl GuiControl for Button {
             }
             GuiMessage::MouseUp(position, job_system) => {
                 if self.base.rect.contains(position) {
-                    if self.check_box {
-                        self.base.checked = !self.base.checked;
+                    if let ButtonCheckState::CheckBox(c) = self.check_state {
+                        self.check_state = ButtonCheckState::CheckBox(!c);
                     }
                     if let Some(Callback(callback)) = &self.callback {
                         if let Some(job_system) = job_system.upgrade() {
@@ -375,6 +409,49 @@ impl GuiControl for Button {
                     }
                 }
                 return true;
+            }
+            _ => return false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TextBox {
+    base: GuiControlBase,
+    font: Font,
+    text: String,
+}
+
+impl TextBox {
+    pub fn new(size_constraints: SizeConstraints, text: String, font: Font) -> Self {
+        Self {
+            base: GuiControlBase::new(size_constraints),
+            font: font
+                .layout_vertical(TextLayoutVertical::MIDDLE)
+                .layout_horizontal(TextLayoutHorizontal::LEFT),
+            text,
+        }
+    }
+}
+
+impl GuiControl for TextBox {
+    fn get_base_mut(&mut self) -> &mut GuiControlBase {
+        &mut self.base
+    }
+
+    fn on_message(&mut self, m: GuiMessage) -> bool {
+        match m {
+            GuiMessage::Draw(buf, theme) => {
+                if self.base.visible {
+                    let size = buf.get_size();
+                    if size.0 > 0 && size.1 > 0 {
+                        let caption_position = (0, buf.get_size().1 as i32 / 2);
+                        self.font
+                            .color(theme.font)
+                            .draw(&self.text, caption_position, buf);
+                    }
+                }
+                return false;
             }
             _ => return false,
         }
@@ -1112,5 +1189,78 @@ impl GuiControl for TabControl {
             }
             _ => return false,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct RadioGroup {
+    container: Container,
+    buttons: Rc<RefCell<Vec<Rc<RefCell<Button>>>>>,
+    selected_index: Rc<RefCell<usize>>,
+}
+
+impl RadioGroup {
+    pub fn new(
+        size_constraints: SizeConstraints,
+        layout: ContainerLayout,
+        caption: TextBox,
+    ) -> Self {
+        let mut container = Container::new(size_constraints, layout);
+        container.add_child(caption);
+        Self {
+            container,
+            buttons: Rc::new(RefCell::new(Vec::new())),
+            selected_index: Rc::new(RefCell::new(0)),
+        }
+    }
+
+    fn change_index_by(
+        buttons: &Weak<RefCell<Vec<Rc<RefCell<Button>>>>>,
+        selected_index: &Weak<RefCell<usize>>,
+        new_index: usize,
+    ) {
+        buttons.upgrade().map(|v| {
+            selected_index.upgrade().map(|i| {
+                v.borrow_mut().get(*i.borrow()).map(|b| {
+                    b.borrow_mut().check_state = ButtonCheckState::RadioButton(false);
+                });
+
+                *i.borrow_mut() = new_index;
+                v.borrow_mut().get(*i.borrow()).map(|b| {
+                    b.borrow_mut().check_state = ButtonCheckState::RadioButton(true);
+                });
+            });
+        });
+    }
+
+    pub fn change_index(&self, new_index: usize) {
+        Self::change_index_by(
+            &Rc::downgrade(&self.buttons),
+            &Rc::downgrade(&self.selected_index),
+            new_index,
+        );
+    }
+
+    pub fn add_button(&mut self, button: Button) {
+        let index_capture = Rc::downgrade(&self.selected_index);
+        let buttons_capture = Rc::downgrade(&self.buttons);
+        let index = self.container.children.len() - 1;
+        let new_button = self
+            .container
+            .add_child(button.radio_button().callback(move || {
+                Self::change_index_by(&buttons_capture, &index_capture, index);
+            }));
+
+        self.buttons.borrow_mut().push(new_button.clone());
+    }
+}
+
+impl GuiControl for RadioGroup {
+    fn get_base_mut(&mut self) -> &mut GuiControlBase {
+        &mut self.container.base
+    }
+
+    fn on_message(&mut self, m: GuiMessage) -> bool {
+        self.container.on_message(m)
     }
 }
