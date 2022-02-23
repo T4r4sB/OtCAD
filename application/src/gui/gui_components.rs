@@ -9,7 +9,7 @@ use crate::gui::*;
 use crate::image::*;
 use crate::keys::*;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum ContainerLayout {
     Vertical,
     Horizontal,
@@ -217,16 +217,39 @@ impl GuiControl for ColorBox {
     }
 }
 
-#[derive(Clone)]
-pub struct Callback(Rc<dyn Fn() + 'static>);
+#[derive(Debug)]
+pub struct EmptySpace {
+    base: GuiControlBase,
+}
 
-impl std::fmt::Debug for Callback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.pad("Callback")
+impl EmptySpace {
+    pub fn new(size_constraints: SizeConstraints) -> Self {
+        Self {
+            base: GuiControlBase::new(size_constraints),
+        }
     }
 }
 
-#[derive(Debug)]
+impl GuiControl for EmptySpace {
+    fn get_base_mut(&mut self) -> &mut GuiControlBase {
+        &mut self.base
+    }
+
+    fn on_message(&mut self, _: GuiMessage) -> bool {
+        return false;
+    }
+}
+
+#[derive(Clone)]
+pub struct ButtonCallback(Rc<dyn Fn() + 'static>);
+
+impl std::fmt::Debug for ButtonCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("ButtonCallback")
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 enum ButtonCheckState {
     None,
     CheckBox(bool),
@@ -239,8 +262,8 @@ pub struct Button {
     holded_when_pushed: bool,
     font: Font,
     text: String,
-    callback: Option<Callback>,
-    check_state: ButtonCheckState,
+    callback: Option<ButtonCallback>,
+    check_state: Rc<RefCell<ButtonCheckState>>,
 }
 
 impl Button {
@@ -253,12 +276,12 @@ impl Button {
                 .layout_horizontal(TextLayoutHorizontal::LEFT),
             text,
             callback: None,
-            check_state: ButtonCheckState::None,
+            check_state: Rc::new(RefCell::new(ButtonCheckState::None)),
         }
     }
 
     pub fn set_callback(&mut self, callback: impl Fn() + 'static) {
-        self.callback = Some(Callback(Rc::new(callback)));
+        self.callback = Some(ButtonCallback(Rc::new(callback)));
     }
 
     pub fn callback(mut self, callback: impl Fn() + 'static) -> Self {
@@ -266,18 +289,32 @@ impl Button {
         self
     }
 
-    pub fn check_box(mut self) -> Self {
-        self.check_state = ButtonCheckState::CheckBox(false);
+    pub fn set_checkbox_callback(&mut self, callback: impl Fn(bool) + 'static) {
+        let check_state_capture = Rc::downgrade(&self.check_state);
+        self.callback = Some(ButtonCallback(Rc::new(move || {
+            check_state_capture.upgrade().map(|check_state| {
+                callback(*check_state.borrow() == ButtonCheckState::CheckBox(true));
+            });
+        })));
+    }
+
+    pub fn checkbox_callback(mut self, callback: impl Fn(bool) + 'static) -> Self {
+        self.set_checkbox_callback(callback);
         self
     }
 
-    pub fn radio_button(mut self) -> Self {
-        self.check_state = ButtonCheckState::RadioButton(false);
+    pub fn check_box(self, state: bool) -> Self {
+        *self.check_state.borrow_mut() = ButtonCheckState::CheckBox(state);
+        self
+    }
+
+    pub fn radio_button(self) -> Self {
+        *self.check_state.borrow_mut() = ButtonCheckState::RadioButton(false);
         self
     }
 
     fn has_checks(&self) -> bool {
-        match self.check_state {
+        match *self.check_state.borrow() {
             ButtonCheckState::None => false,
             ButtonCheckState::CheckBox(_) => true,
             ButtonCheckState::RadioButton(_) => true,
@@ -285,7 +322,7 @@ impl Button {
     }
 
     fn checked(&self) -> bool {
-        match self.check_state {
+        match *self.check_state.borrow() {
             ButtonCheckState::None => false,
             ButtonCheckState::CheckBox(c) => c,
             ButtonCheckState::RadioButton(c) => c,
@@ -293,7 +330,7 @@ impl Button {
     }
 
     fn default_check_symbol(&self) -> &'static str {
-        match self.check_state {
+        match *self.check_state.borrow() {
             ButtonCheckState::None => "",
             ButtonCheckState::CheckBox(_) => "V",
             ButtonCheckState::RadioButton(_) => "●",
@@ -301,7 +338,7 @@ impl Button {
     }
 
     fn check_symbol(&self) -> &'static str {
-        match self.check_state {
+        match *self.check_state.borrow() {
             ButtonCheckState::None => "",
             ButtonCheckState::CheckBox(c) => {
                 if c {
@@ -342,9 +379,11 @@ impl GuiControl for Button {
                             buf.fill(|d| *d = avg_color(theme.highlight, *d));
                         }
 
-                        let check_symbol = self.default_check_symbol();
-                        let check_width =
-                            min(self.font.get_size(check_symbol).0 * 2, buf.get_size().0);
+                        let default_check_symbol = self.default_check_symbol();
+                        let check_width = min(
+                            self.font.get_size(default_check_symbol).0 * 2,
+                            buf.get_size().0,
+                        );
                         let mut caption_dst = buf.window_mut((check_width, 0), buf.get_size());
                         let with_checks = self.has_checks();
 
@@ -398,14 +437,14 @@ impl GuiControl for Button {
                 }
             }
             GuiMessage::MouseUp(position, job_system) => {
-                if self.base.rect.contains(position) {
-                    if let ButtonCheckState::CheckBox(c) = self.check_state {
-                        self.check_state = ButtonCheckState::CheckBox(!c);
+                if self.base.pressed && self.base.rect.contains(position) {
+                    if let ButtonCheckState::CheckBox(c) =
+                        &mut self.check_state.borrow_mut().deref_mut()
+                    {
+                        *c = !*c;
                     }
-                    if let Some(Callback(callback)) = &self.callback {
-                        if let Some(job_system) = job_system.upgrade() {
-                            job_system.borrow_mut().add_callback(callback.clone());
-                        }
+                    if let Some(ButtonCallback(callback)) = &self.callback {
+                        job_system.add_callback(callback.clone());
                     }
                 }
                 return true;
@@ -418,6 +457,7 @@ impl GuiControl for Button {
 #[derive(Debug)]
 pub struct TextBox {
     base: GuiControlBase,
+    padding: bool,
     font: Font,
     text: String,
 }
@@ -426,6 +466,7 @@ impl TextBox {
     pub fn new(size_constraints: SizeConstraints, text: String, font: Font) -> Self {
         Self {
             base: GuiControlBase::new(size_constraints),
+            padding: true,
             font: font
                 .layout_vertical(TextLayoutVertical::MIDDLE)
                 .layout_horizontal(TextLayoutHorizontal::LEFT),
@@ -445,7 +486,12 @@ impl GuiControl for TextBox {
                 if self.base.visible {
                     let size = buf.get_size();
                     if size.0 > 0 && size.1 > 0 {
-                        let caption_position = (0, buf.get_size().1 as i32 / 2);
+                        let position = if self.padding {
+                            self.font.get_size(&self.text).1 as i32 / 2
+                        } else {
+                            0
+                        };
+                        let caption_position = (position, buf.get_size().1 as i32 / 2);
                         self.font
                             .color(theme.font)
                             .draw(&self.text, caption_position, buf);
@@ -464,17 +510,13 @@ pub struct Edit {
 
     text: Vec<char>,
     font: Font,
-    clipboard: Rc<RefCell<dyn Clipboard>>,
+    clipboard: Clipboard,
     scroll_position: i32,
     cursor_position: i32,
 }
 
 impl Edit {
-    pub fn new(
-        size_constraints: SizeConstraints,
-        font: Font,
-        clipboard: Rc<RefCell<dyn Clipboard>>,
-    ) -> Self {
+    pub fn new(size_constraints: SizeConstraints, font: Font, clipboard: Clipboard) -> Self {
         Self {
             base: GuiControlBase::new(size_constraints),
             text: Default::default(),
@@ -520,7 +562,7 @@ impl Edit {
     }
 
     fn paste(&mut self) -> bool {
-        if let Some(text) = self.clipboard.clone().borrow().get_string() {
+        if let Some(text) = self.clipboard.get_string() {
             for c in text.chars() {
                 if Self::char_is_valid(c) {
                     self.text.insert(self.cursor_position as usize, c);
@@ -1031,6 +1073,10 @@ impl TabControl {
             .get(*self.selected_tab_index.borrow().deref())
             .map(|t| t.container.clone())
     }
+
+    pub fn select_tab(&mut self, index: usize) {
+        *self.selected_tab_index.borrow_mut() = index
+    }
 }
 
 impl GuiControl for TabControl {
@@ -1192,11 +1238,21 @@ impl GuiControl for TabControl {
     }
 }
 
+#[derive(Clone)]
+pub struct RadioGroupCallback(Rc<dyn Fn(usize) + 'static>);
+
+impl std::fmt::Debug for RadioGroupCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("RadioGroupCallback")
+    }
+}
+
 #[derive(Debug)]
 pub struct RadioGroup {
     container: Container,
     buttons: Rc<RefCell<Vec<Rc<RefCell<Button>>>>>,
     selected_index: Rc<RefCell<usize>>,
+    callback: Rc<RefCell<Option<RadioGroupCallback>>>,
 }
 
 impl RadioGroup {
@@ -1211,24 +1267,39 @@ impl RadioGroup {
             container,
             buttons: Rc::new(RefCell::new(Vec::new())),
             selected_index: Rc::new(RefCell::new(0)),
+            callback: Rc::new(RefCell::new(None)),
         }
+    }
+
+    pub fn set_callback(&mut self, callback: impl Fn(usize) + 'static) {
+        *self.callback.borrow_mut() = Some(RadioGroupCallback(Rc::new(callback)));
+    }
+
+    pub fn callback(mut self, callback: impl Fn(usize) + 'static) -> Self {
+        self.set_callback(callback);
+        self
     }
 
     fn change_index_by(
         buttons: &Weak<RefCell<Vec<Rc<RefCell<Button>>>>>,
         selected_index: &Weak<RefCell<usize>>,
+        callback: &Rc<RefCell<Option<RadioGroupCallback>>>,
         new_index: usize,
     ) {
         buttons.upgrade().map(|v| {
             selected_index.upgrade().map(|i| {
                 v.borrow_mut().get(*i.borrow()).map(|b| {
-                    b.borrow_mut().check_state = ButtonCheckState::RadioButton(false);
+                    *b.borrow_mut().check_state.borrow_mut() = ButtonCheckState::RadioButton(false);
                 });
 
                 *i.borrow_mut() = new_index;
                 v.borrow_mut().get(*i.borrow()).map(|b| {
-                    b.borrow_mut().check_state = ButtonCheckState::RadioButton(true);
+                    *b.borrow_mut().check_state.borrow_mut() = ButtonCheckState::RadioButton(true);
                 });
+
+                if let Some(RadioGroupCallback(callback)) = callback.borrow().deref() {
+                    callback(new_index);
+                }
             });
         });
     }
@@ -1237,6 +1308,7 @@ impl RadioGroup {
         Self::change_index_by(
             &Rc::downgrade(&self.buttons),
             &Rc::downgrade(&self.selected_index),
+            &self.callback,
             new_index,
         );
     }
@@ -1245,10 +1317,11 @@ impl RadioGroup {
         let index_capture = Rc::downgrade(&self.selected_index);
         let buttons_capture = Rc::downgrade(&self.buttons);
         let index = self.container.children.len() - 1;
+        let callback_capture = self.callback.clone();
         let new_button = self
             .container
             .add_child(button.radio_button().callback(move || {
-                Self::change_index_by(&buttons_capture, &index_capture, index);
+                Self::change_index_by(&buttons_capture, &index_capture, &callback_capture, index);
             }));
 
         self.buttons.borrow_mut().push(new_button.clone());

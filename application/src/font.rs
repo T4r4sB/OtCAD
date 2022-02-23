@@ -4,32 +4,40 @@ use std::cmp::max;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum FontAliasingMode {
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum FontAntiAliasingMode {
     NoAA,
     AA,
     TT,
 }
 
+impl Default for FontAntiAliasingMode {
+    fn default() -> Self {
+        FontAntiAliasingMode::NoAA
+    }
+}
+
 pub enum Glyph {
     NoAA(Image<bool>),
-    AA(Image<u8>),
-    TT(Image<u32>),
+    AA(Image<u8>, Image<u8>),
+    TT(Image<u32>, Image<u32>),
 }
 
 pub struct FontLine {
     name: String,
     size: i32,
-    aliasing_mode: FontAliasingMode,
+    anti_aliasing_mode: FontAntiAliasingMode,
     chars: HashMap<char, Glyph>,
 }
 
 impl FontLine {
-    pub fn new(name: String, size: i32, aliasing_mode: FontAliasingMode) -> Self {
+    pub fn new(name: String, size: i32, anti_aliasing_mode: FontAntiAliasingMode) -> Self {
         Self {
             name,
             size,
-            aliasing_mode,
+            anti_aliasing_mode,
             chars: Default::default(),
         }
     }
@@ -50,13 +58,14 @@ pub trait FontLoader {
         font_size: i32,
         code_from: u32,
         code_to: u32,
-        aliasing_mode: FontAliasingMode,
+        anti_aliasing_mode: FontAntiAliasingMode,
     ) -> HashMap<char, Glyph>;
 }
 
 #[derive(Clone)]
 pub struct Font {
     color: u32,
+    light: bool,
     layout_horizontal: TextLayoutHorizontal,
     layout_vertical: TextLayoutVertical,
     line: Rc<RefCell<FontLine>>,
@@ -99,6 +108,7 @@ impl Font {
     ) -> Self {
         Self {
             color,
+            light: Self::color_is_light(color),
             layout_horizontal,
             layout_vertical,
             line,
@@ -106,9 +116,17 @@ impl Font {
         }
     }
 
+    fn color_is_light(color: u32) -> bool {
+        let r = color & 0xFF;
+        let g = (color >> 8) & 0xFF;
+        let b = (color >> 16) & 0xFF;
+        r + g + b >= 0x180
+    }
+
     pub fn color(&self, color: u32) -> Self {
         let mut result = self.clone();
         result.color = color;
+        result.light = Self::color_is_light(color);
         result
     }
 
@@ -136,7 +154,7 @@ impl Font {
                 line.size,
                 code & !0xFF,
                 (code & !0xFF) + 0x100,
-                line.aliasing_mode,
+                line.anti_aliasing_mode,
             );
             line.chars.extend(additional_glyphs);
         }
@@ -149,8 +167,8 @@ impl Font {
         for c in text.chars() {
             let sz = match self.get_char(c, line) {
                 Some(Glyph::NoAA(img)) => img.get_size(),
-                Some(Glyph::AA(img)) => img.get_size(),
-                Some(Glyph::TT(img)) => img.get_size(),
+                Some(Glyph::AA(img, _)) => img.get_size(),
+                Some(Glyph::TT(img, _)) => img.get_size(),
                 None => (0, 0),
             };
             result.0 += sz.0;
@@ -193,7 +211,8 @@ impl Font {
                     });
                     position.0 += img.get_size().0 as i32;
                 }
-                Some(Glyph::AA(img)) => {
+                Some(Glyph::AA(img_black, img_white)) => {
+                    let img = if self.light { &img_white } else { &img_black };
                     dst.draw(img.as_view(), position, |dst, src| {
                         let dst_r = (*dst & 0xFF) as i32;
                         let dst_g = ((*dst >> 8) & 0xFF) as i32;
@@ -217,7 +236,8 @@ impl Font {
                     });
                     position.0 += img.get_size().0 as i32;
                 }
-                Some(Glyph::TT(img)) => {
+                Some(Glyph::TT(img_black, img_white)) => {
+                    let img = if self.light { &img_white } else { &img_black };
                     dst.draw(img.as_view(), position, |dst, src| {
                         let dst_r = (*dst & 0xFF) as i32;
                         let dst_g = ((*dst >> 8) & 0xFF) as i32;
@@ -253,34 +273,39 @@ impl Font {
 }
 
 pub struct FontFactory {
-    library: HashMap<(String, i32, FontAliasingMode), Rc<RefCell<FontLine>>>,
+    library: HashMap<(String, i32, FontAntiAliasingMode), Rc<RefCell<FontLine>>>,
     loader: Rc<RefCell<dyn FontLoader>>,
 }
 
 impl FontFactory {
-    pub fn new(loader: Rc<RefCell<dyn FontLoader>>) -> Self {
+    pub fn new(loader: impl FontLoader + 'static) -> Self {
         Self {
             library: Default::default(),
-            loader,
+            loader: Rc::new(RefCell::new(loader)),
         }
     }
 
-    pub fn new_font(&mut self, name: &str, size: i32, aliasing_mode: FontAliasingMode) -> Font {
-        let library = self
+    pub fn new_font(
+        &mut self,
+        name: &str,
+        size: i32,
+        anti_aliasing_mode: FontAntiAliasingMode,
+    ) -> Font {
+        let library_line = self
             .library
-            .entry((name.to_string(), size, aliasing_mode))
+            .entry((name.to_string(), size, anti_aliasing_mode))
             .or_insert_with(|| {
                 Rc::new(RefCell::new(FontLine::new(
                     name.to_string(),
                     size,
-                    aliasing_mode,
+                    anti_aliasing_mode,
                 )))
             });
         Font::new(
             0x000000,
             TextLayoutHorizontal::LEFT,
             TextLayoutVertical::TOP,
-            library.clone(),
+            library_line.clone(),
             self.loader.clone(),
         )
     }

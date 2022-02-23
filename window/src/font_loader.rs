@@ -26,7 +26,7 @@ impl GDIFontLoader {
         font_size: i32,
         code_from: u32,
         code_to: u32,
-        aliasing_mode: FontAliasingMode,
+        anti_aliasing_mode: FontAntiAliasingMode,
     ) -> APIResult<HashMap<char, Glyph>> {
         let mut dst = DIBSection::new((1, 1))?;
         let mut max_size = dst.get_size();
@@ -34,10 +34,10 @@ impl GDIFontLoader {
         let mut result = HashMap::new();
 
         unsafe {
-            let quality = match aliasing_mode {
-                FontAliasingMode::NoAA => NONANTIALIASED_QUALITY,
-                FontAliasingMode::AA => ANTIALIASED_QUALITY,
-                FontAliasingMode::TT => CLEARTYPE_QUALITY,
+            let quality = match anti_aliasing_mode {
+                FontAntiAliasingMode::NoAA => NONANTIALIASED_QUALITY,
+                FontAntiAliasingMode::AA => ANTIALIASED_QUALITY,
+                FontAntiAliasingMode::TT => CLEARTYPE_QUALITY,
             };
 
             let font = AutoHGDIObj::new(run_api!(CreateFontW(
@@ -86,37 +86,71 @@ impl GDIFontLoader {
                         right: max_size.0 as i32,
                         bottom: max_size.1 as i32,
                     };
-                    dst.as_view_mut().fill(|p| *p = 0xFFFFFF);
 
-                    run_api!(DrawTextW(
-                        dc,
-                        ws,
-                        1,
-                        &mut text_rect,
-                        DT_SINGLELINE | DT_LEFT | DT_TOP
-                    ))?;
+                    macro_rules! draw_text {
+                        () => {
+                            run_api!(DrawTextW(
+                                dc,
+                                ws,
+                                1,
+                                &mut text_rect,
+                                DT_SINGLELINE | DT_LEFT | DT_TOP
+                            ))?;
+                        };
+                    }
 
-                    match aliasing_mode {
-                        FontAliasingMode::NoAA => {
+                    macro_rules! draw_black {
+                        () => {
+                            dst.as_view_mut().fill(|p| *p = 0xFFFFFF);
+                            SetTextColor(dc, 0x000000);
+                            SetBkColor(dc, 0xFFFFFF);
+                            draw_text!();
+                        };
+                    }
+
+                    macro_rules! draw_white {
+                        () => {
+                            dst.as_view_mut().fill(|p| *p = 0x000000);
+                            SetTextColor(dc, 0xFFFFFF);
+                            SetBkColor(dc, 0x000000);
+                            draw_text!();
+                        };
+                    }
+
+                    match anti_aliasing_mode {
+                        FontAntiAliasingMode::NoAA => {
+                            draw_black!();
                             let mut new_image = Image::new(rect);
                             new_image
                                 .as_view_mut()
                                 .draw(dst.as_view(), (0, 0), |d, s| *d = *s == 0);
                             result.insert(c, Glyph::NoAA(new_image));
                         }
-                        FontAliasingMode::AA => {
-                            let mut new_image = Image::new(rect);
-                            new_image
+                        FontAntiAliasingMode::AA => {
+                            draw_black!();
+                            let mut new_image_dark = Image::new(rect);
+                            new_image_dark
                                 .as_view_mut()
                                 .draw(dst.as_view(), (0, 0), |d, s| *d = 0xFF - (*s & 0xFF) as u8);
-                            result.insert(c, Glyph::AA(new_image));
+                            draw_white!();
+                            let mut new_image_light = Image::new(rect);
+                            new_image_light
+                                .as_view_mut()
+                                .draw(dst.as_view(), (0, 0), |d, s| *d = (*s & 0xFF) as u8);
+                            result.insert(c, Glyph::AA(new_image_dark, new_image_light));
                         }
-                        FontAliasingMode::TT => {
-                            let mut new_image = Image::new(rect);
-                            new_image
+                        FontAntiAliasingMode::TT => {
+                            draw_black!();
+                            let mut new_image_dark = Image::new(rect);
+                            new_image_dark
                                 .as_view_mut()
                                 .draw(dst.as_view(), (0, 0), |d, s| *d = !*s);
-                            result.insert(c, Glyph::TT(new_image));
+                            draw_white!();
+                            let mut new_image_light = Image::new(rect);
+                            new_image_light
+                                .as_view_mut()
+                                .draw(dst.as_view(), (0, 0), |d, s| *d = *s);
+                            result.insert(c, Glyph::TT(new_image_dark, new_image_light));
                         }
                     }
                 }
@@ -134,20 +168,25 @@ impl FontLoader for GDIFontLoader {
         font_size: i32,
         code_from: u32,
         code_to: u32,
-        aliasing_mode: FontAliasingMode,
+        anti_aliasing_mode: FontAntiAliasingMode,
     ) -> HashMap<char, Glyph> {
-        let mut aliasing_mode = aliasing_mode;
+        let mut anti_aliasing_mode = anti_aliasing_mode;
         loop {
-            let result =
-                self.maybe_load_glyphs(font_name, font_size, code_from, code_to, aliasing_mode);
-            if result.is_ok() || aliasing_mode == FontAliasingMode::NoAA {
+            let result = self.maybe_load_glyphs(
+                font_name,
+                font_size,
+                code_from,
+                code_to,
+                anti_aliasing_mode,
+            );
+            if result.is_ok() || anti_aliasing_mode == FontAntiAliasingMode::NoAA {
                 return result.unwrap_or_default();
             }
 
-            if aliasing_mode == FontAliasingMode::AA {
-                aliasing_mode = FontAliasingMode::NoAA;
-            } else if aliasing_mode == FontAliasingMode::TT {
-                aliasing_mode = FontAliasingMode::AA;
+            if anti_aliasing_mode == FontAntiAliasingMode::AA {
+                anti_aliasing_mode = FontAntiAliasingMode::NoAA;
+            } else if anti_aliasing_mode == FontAntiAliasingMode::TT {
+                anti_aliasing_mode = FontAntiAliasingMode::AA;
             }
         }
     }

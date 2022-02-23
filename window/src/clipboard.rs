@@ -52,7 +52,7 @@ impl Clipboard {
     }
 }
 
-impl application::clipboard::Clipboard for Clipboard {
+impl application::clipboard::ClipboardHandler for Clipboard {
     fn get_string(&self) -> Option<String> {
         self.maybe_get_string().unwrap_or_default()
     }

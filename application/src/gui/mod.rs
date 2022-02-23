@@ -81,13 +81,13 @@ impl GuiControlBase {
 }
 
 pub enum GuiMessage<'i, 'j> {
-    Draw(&'i mut ImageViewMut<'j, u32>, &'i ColorTheme),
+    Draw(&'i mut ImageViewMut<'j, u32>, &'i GuiColorTheme),
     UpdateSizeConstraints(&'i mut SizeConstraints),
     FindDestination(&'i mut Rc<RefCell<dyn GuiControl>>, Position),
     RectUpdated,
     MouseDown(Position),
     MouseMove(Position),
-    MouseUp(Position, Weak<RefCell<JobSystem>>),
+    MouseUp(Position, JobSystem),
     MouseWheel(Position, i32),
     Char(char),
     KeyDown(Key),
@@ -104,7 +104,7 @@ pub(crate) fn avg_color(color1: u32, color2: u32) -> u32 {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct ColorTheme {
+pub struct GuiColorTheme {
     pub font: u32,
     pub splitter: u32,
     pub highlight: u32,
@@ -115,41 +115,35 @@ pub struct ColorTheme {
     pub edit_focused: u32,
 }
 
-impl ColorTheme {
-    pub fn dark() -> Self {
-        Self {
-            font: 0xCCCCCC,
-            splitter: 0xCCBBAA,
-            highlight: 0x999999,
-            pressed: 0xFFFFFF,
-            selected: 0xAA8866,
-            inactive: 0x444444,
-            edit_highlight: 0x666666,
-            edit_focused: 0x888888,
-        }
-    }
+pub static DARK_THEME: GuiColorTheme = GuiColorTheme {
+    font: 0xCCCCCC,
+    splitter: 0xAACCAA,
+    highlight: 0x999999,
+    pressed: 0xFFFFFF,
+    selected: 0x66CC66,
+    inactive: 0x444444,
+    edit_highlight: 0x666666,
+    edit_focused: 0x888888,
+};
 
-    pub fn light() -> Self {
-        Self {
-            font: 0x000000,
-            splitter: 0x664422,
-            highlight: 0x666666,
-            pressed: 0x222222,
-            selected: 0xCC9966,
-            inactive: 0xAAAAAA,
-            edit_highlight: 0xCCCCCC,
-            edit_focused: 0xEEEEEE,
-        }
-    }
-}
+pub static LIGHT_THEME: GuiColorTheme = GuiColorTheme {
+    font: 0x000000,
+    splitter: 0x664422,
+    highlight: 0x666666,
+    pressed: 0x222222,
+    selected: 0xCC8844,
+    inactive: 0xAAAAAA,
+    edit_highlight: 0xCCCCCC,
+    edit_focused: 0xEEEEEE,
+};
 
 pub struct GuiSystem {
-    job_system: Rc<RefCell<JobSystem>>,
+    job_system: JobSystem,
     root: Option<Rc<RefCell<dyn GuiControl>>>,
-    focus: Option<Rc<RefCell<dyn GuiControl>>>,
-    highlight: Option<Rc<RefCell<dyn GuiControl>>>,
-    pressed: Option<Rc<RefCell<dyn GuiControl>>>,
-    color_theme: ColorTheme,
+    focus: Option<Weak<RefCell<dyn GuiControl>>>,
+    highlight: Option<Weak<RefCell<dyn GuiControl>>>,
+    pressed: Option<Weak<RefCell<dyn GuiControl>>>,
+    color_theme: GuiColorTheme,
     updated: bool,
 }
 
@@ -167,16 +161,17 @@ macro_rules! set_property {
         };
 
         if let Some(new_ptr) = $new {
-            let mut new = new_ptr.borrow_mut();
-            let new_base = new.get_base_mut();
-            if new_base.$field {
-                return false;
-            }
+            {
+                let mut new = new_ptr.borrow_mut();
+                let new_base = new.get_base_mut();
+                if new_base.$field {
+                    return false;
+                }
 
-            new_base.$field = true;
-            drop(new);
+                new_base.$field = true;
+            }
             off_old_flag();
-            $self.$field = Some(new_ptr);
+            $self.$field = Some(Rc::downgrade(&new_ptr));
         } else {
             if off_old_flag() {
                 $self.$field = None;
@@ -190,14 +185,14 @@ macro_rules! set_property {
 }
 
 impl GuiSystem {
-    pub fn new(job_system: Rc<RefCell<JobSystem>>) -> Self {
+    pub fn new(job_system: JobSystem) -> Self {
         Self {
             job_system,
             root: None,
             focus: None,
             highlight: None,
             pressed: None,
-            color_theme: ColorTheme::light(),
+            color_theme: LIGHT_THEME,
             updated: false,
         }
     }
@@ -227,7 +222,7 @@ impl GuiSystem {
     }
 
     fn get_focus(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
-        self.focus.clone()
+        self.focus.as_ref().and_then(Weak::upgrade).clone()
     }
 
     fn set_focus(&mut self, new_focus: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
@@ -235,7 +230,7 @@ impl GuiSystem {
     }
 
     fn get_highlight(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
-        self.highlight.clone()
+        self.highlight.as_ref().and_then(Weak::upgrade).clone()
     }
 
     fn set_highlight(&mut self, new_highlight: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
@@ -243,7 +238,7 @@ impl GuiSystem {
     }
 
     fn get_pressed(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
-        self.pressed.clone()
+        self.pressed.as_ref().and_then(Weak::upgrade).clone()
     }
 
     fn set_pressed(&mut self, new_pressed: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
@@ -268,6 +263,10 @@ impl GuiSystem {
                 &self.color_theme,
             ));
         }
+    }
+
+    pub fn set_color_theme(&mut self, color_theme: GuiColorTheme) {
+        self.color_theme = color_theme;
     }
 
     pub fn on_resize(&mut self) {
@@ -352,10 +351,10 @@ impl GuiSystem {
             } else {
                 Self::get_child(&root, position)
             };
-            if handler.borrow_mut().on_message(GuiMessage::MouseUp(
-                position,
-                Rc::downgrade(&self.job_system),
-            )) {
+            if handler
+                .borrow_mut()
+                .on_message(GuiMessage::MouseUp(position, self.job_system.clone()))
+            {
                 self.updated = false;
                 return self.set_pressed(None);
             }

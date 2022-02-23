@@ -12,14 +12,6 @@ use winapi::um::libloaderapi::*;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
-#[macro_use]
-mod errors;
-mod clipboard;
-mod dib_section;
-mod font_loader;
-mod resources;
-mod wide_strings;
-
 use crate::dib_section::DIBSection;
 use crate::errors::*;
 use crate::resources::*;
@@ -28,24 +20,43 @@ use application::clipboard::*;
 use application::draw_context::*;
 use application::font::*;
 use application::gui::GuiSystem;
+use application::image::*;
 use application::job_system::*;
 use application::keys::Key;
+use serde::{Deserialize, Serialize};
+
+#[macro_use]
+mod errors;
+mod clipboard;
+mod dib_section;
+mod font_loader;
+mod resources;
+mod wide_strings;
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+pub struct WindowPosition {
+    pub maximized: bool,
+    pub left_top: Position,
+    pub right_bottom: Position,
+}
 
 pub trait Application {
-    fn on_create(&mut self, context: &mut Context);
+    fn on_create(&mut self, context: Rc<RefCell<Context>>);
+    fn on_close(&mut self, context: Rc<RefCell<Context>>);
+    fn on_change_position(&mut self, window_position: WindowPosition);
     fn on_draw(&self, draw_context: &mut DrawContext);
 }
 
 pub struct SystemContext {
     application: Box<dyn Application>,
     buffer: Option<DIBSection>,
-    context: Context,
+    context: Rc<RefCell<Context>>,
 }
 
 pub struct Context {
     pub font_factory: FontFactory,
-    pub clipboard: Rc<RefCell<dyn Clipboard>>,
-    pub job_system: Rc<RefCell<JobSystem>>,
+    pub clipboard: Clipboard,
+    pub job_system: JobSystem,
     pub gui_system: GuiSystem,
 }
 
@@ -63,6 +74,46 @@ pub fn get_window_rect(hwnd: HWND) -> APIResult<RECT> {
         run_api!(GetWindowRect(hwnd, rect.as_mut_ptr()))?;
         Ok(rect.assume_init())
     }
+}
+
+pub fn get_desctop_rect() -> APIResult<RECT> {
+    unsafe {
+        let mut rect = MaybeUninit::<RECT>::uninit();
+        run_api!(SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            std::mem::transmute(rect.as_mut_ptr()),
+            0
+        ))?;
+        Ok(rect.assume_init())
+    }
+}
+
+pub fn adjust_rect(src: RECT, dst: &mut RECT) {
+    if dst.left < src.left {
+        dst.right += src.left - dst.left;
+        dst.left = src.left;
+    }
+
+    if dst.top < src.top {
+        dst.bottom += src.top - dst.top;
+        dst.top = src.top;
+    }
+
+    if dst.right > src.right {
+        dst.left -= dst.right - src.right;
+        dst.right = src.right;
+    }
+
+    if dst.bottom > src.bottom {
+        dst.top -= dst.bottom - src.bottom;
+        dst.bottom = src.bottom;
+    }
+
+    dst.left = max(dst.left, src.left);
+    dst.top = max(dst.top, src.top);
+    dst.right = min(dst.right, src.right);
+    dst.bottom = min(dst.bottom, src.bottom);
 }
 
 fn wparam_to_key(code: WPARAM) -> Option<Key> {
@@ -88,6 +139,54 @@ fn wparam_to_key(code: WPARAM) -> Option<Key> {
         _ => return None,
     }
 }
+fn adjust_window_size(context: &mut Context, hwnd: HWND) -> APIResult<()> {
+    let minimal_size = context.gui_system.get_minimal_size();
+    let client_rect = get_client_rect(hwnd)?;
+    let dx = max(0, minimal_size.0 - (client_rect.right - client_rect.left));
+    let dy = max(0, minimal_size.1 - (client_rect.bottom - client_rect.top));
+    let mut window_rect = get_window_rect(hwnd)?;
+    window_rect.left -= dx / 2;
+    window_rect.top -= dy / 2;
+    window_rect.right += dx / 2;
+    window_rect.bottom += dy / 2;
+    adjust_rect(get_desctop_rect()?, &mut window_rect);
+
+    unsafe {
+        run_api!(SetWindowPos(
+            hwnd,
+            0 as HWND,
+            window_rect.left,
+            window_rect.top,
+            window_rect.right - window_rect.left,
+            window_rect.bottom - window_rect.top,
+            0
+        ))?;
+    }
+
+    Ok(())
+}
+
+fn run_jobs(context: &Rc<RefCell<Context>>, hwnd: HWND) -> APIResult<()> {
+    let job_system = context.borrow_mut().job_system.clone();
+    job_system.run_all();
+    adjust_window_size(&mut context.borrow_mut(), hwnd)?;
+    Ok(())
+}
+
+fn get_window_position(hwnd: HWND) -> APIResult<WindowPosition> {
+    unsafe {
+        let mut wp = MaybeUninit::<WINDOWPLACEMENT>::zeroed().assume_init();
+        wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+        run_api!(GetWindowPlacement(hwnd, &mut wp))?;
+        let rect = get_window_rect(hwnd)?;
+        let maximized = wp.showCmd as i32 == SW_SHOWMAXIMIZED;
+        Ok(WindowPosition {
+            maximized,
+            left_top: (rect.left, rect.top),
+            right_bottom: (rect.right, rect.bottom),
+        })
+    }
+}
 
 unsafe fn maybe_window_proc(
     hwnd: HWND,
@@ -96,46 +195,15 @@ unsafe fn maybe_window_proc(
     lparam: LPARAM,
 ) -> APIResult<LRESULT> {
     let get_context =
-        || -> APIResult<(&mut dyn Application, &mut Option<DIBSection>, &mut Context)> {
+        || -> APIResult<(&mut dyn Application, &mut Option<DIBSection>, Rc<RefCell<Context>>)> {
             let system_context: &mut SystemContext =
                 std::mem::transmute(run_api!(GetWindowLongPtrW(hwnd, GWL_USERDATA))?);
             Ok((
                 system_context.application.deref_mut(),
                 &mut system_context.buffer,
-                &mut system_context.context,
+                system_context.context.clone(),
             ))
         };
-
-    fn adjust_window_size(context: &mut Context, hwnd: HWND) -> APIResult<()> {
-        let minimal_size = context.gui_system.get_minimal_size();
-        let client_rect = get_client_rect(hwnd)?;
-        let dx = max(0, minimal_size.0 - (client_rect.right - client_rect.left));
-        let dy = max(0, minimal_size.1 - (client_rect.bottom - client_rect.top));
-        let mut window_rect = get_window_rect(hwnd)?;
-        window_rect.left -= dx / 2;
-        window_rect.top -= dy / 2;
-        window_rect.right += dx / 2;
-        window_rect.bottom += dy / 2;
-        unsafe {
-            run_api!(SetWindowPos(
-                hwnd,
-                0 as HWND,
-                window_rect.left,
-                window_rect.top,
-                window_rect.right - window_rect.left,
-                window_rect.bottom - window_rect.top,
-                0
-            ))?;
-        }
-
-        Ok(())
-    }
-
-    fn run_jobs(context: &mut Context, hwnd: HWND) -> APIResult<()> {
-        context.job_system.borrow_mut().run_all();
-        adjust_window_size(context, hwnd)?;
-        Ok(())
-    }
 
     match msg {
         WM_CHAR => {
@@ -148,7 +216,7 @@ unsafe fn maybe_window_proc(
 
             let (_, _, context) = get_context()?;
             for c in str.chars() {
-                if context.gui_system.on_char(c) {
+                if context.borrow_mut().gui_system.on_char(c) {
                     run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
                 }
             }
@@ -157,17 +225,17 @@ unsafe fn maybe_window_proc(
         WM_KEYDOWN => {
             if let Some(key) = wparam_to_key(wparam) {
                 let (_, _, context) = get_context()?;
-                if context.gui_system.on_key_down(key) {
+                if context.borrow_mut().gui_system.on_key_down(key) {
                     run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
                 }
-                run_jobs(context, hwnd)?;
+                run_jobs(&context, hwnd)?;
             }
         }
 
         WM_KEYUP => {
             if let Some(key) = wparam_to_key(wparam) {
                 let (_, _, context) = get_context()?;
-                if context.gui_system.on_key_up(key) {
+                if context.borrow_mut().gui_system.on_key_up(key) {
                     run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
                 }
             }
@@ -190,17 +258,19 @@ unsafe fn maybe_window_proc(
             let (application, buffer, context) = get_context()?;
             if buffer.is_none() || buffer.as_ref().unwrap().get_size() != rect_size {
                 *buffer = Some(DIBSection::new(rect_size)?);
-                context.gui_system.on_resize();
+                context.borrow_mut().gui_system.on_resize();
             }
 
             let buffer = buffer.as_mut().unwrap();
+            let mut context_borrow_mut = context.borrow_mut();
+            let context_ref = context_borrow_mut.deref_mut();
             let mut draw_context = DrawContext {
                 buffer: buffer.as_view_mut(),
-                font_factory: &mut context.font_factory,
+                font_factory: &mut context_ref.font_factory,
             };
 
             application.on_draw(&mut draw_context);
-            context.gui_system.on_draw(&mut draw_context);
+            context_ref.gui_system.on_draw(&mut draw_context);
             let paint_struct_context = PaintStructContext::new(hwnd)?;
             run_api!(BitBlt(
                 paint_struct_context.get_dc(),
@@ -223,7 +293,7 @@ unsafe fn maybe_window_proc(
             let window_rect = get_window_rect(hwnd)?;
 
             let (_, _, context) = get_context()?;
-            let minimal_size = context.gui_system.get_minimal_size();
+            let minimal_size = context.borrow().gui_system.get_minimal_size();
             // Count size of bevel...
             let minimal_size_x = minimal_size.0 as i32 + (window_rect.right - window_rect.left)
                 - (client_rect.right - client_rect.left);
@@ -253,11 +323,27 @@ unsafe fn maybe_window_proc(
             }
         }
 
+        WM_SIZE => {
+            let (application, _, _) = get_context()?;
+            application.on_change_position(get_window_position(hwnd)?);
+        }
+
+        WM_MOVING => {
+            let p_rect: *mut RECT = std::mem::transmute(lparam);
+            let rect = &mut *p_rect;
+            adjust_rect(get_desctop_rect()?, rect);
+        }
+
+        WM_MOVE => {
+            let (application, _, _) = get_context()?;
+            application.on_change_position(get_window_position(hwnd)?);
+        }
+
         WM_CREATE => {
             let create_struct: &mut CREATESTRUCTW = std::mem::transmute(lparam);
             let system_context: &mut SystemContext =
                 std::mem::transmute(create_struct.lpCreateParams);
-            adjust_window_size(&mut system_context.context, hwnd)?;
+            adjust_window_size(&mut system_context.context.borrow_mut(), hwnd)?;
         }
 
         WM_LBUTTONDOWN => {
@@ -267,10 +353,10 @@ unsafe fn maybe_window_proc(
                 HIWORD(lparam as u32) as i16 as i32,
             );
             let (_, _, context) = get_context()?;
-            if context.gui_system.on_mouse_down(position) {
+            if context.borrow_mut().gui_system.on_mouse_down(position) {
                 run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
             }
-            run_jobs(context, hwnd)?;
+            run_jobs(&context, hwnd)?;
         }
 
         WM_MOUSEWHEEL => {
@@ -283,7 +369,11 @@ unsafe fn maybe_window_proc(
             let position = (point.x, point.y);
             let delta = -(HIWORD(wparam as u32) as i16 as i32) / (WHEEL_DELTA as i32);
             let (_, _, context) = get_context()?;
-            if context.gui_system.on_mouse_wheel(position, delta) {
+            if context
+                .borrow_mut()
+                .gui_system
+                .on_mouse_wheel(position, delta)
+            {
                 run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
             }
         }
@@ -294,7 +384,7 @@ unsafe fn maybe_window_proc(
                 HIWORD(lparam as u32) as i16 as i32,
             );
             let (_, _, context) = get_context()?;
-            if context.gui_system.on_mouse_move(position) {
+            if context.borrow_mut().gui_system.on_mouse_move(position) {
                 run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
             }
 
@@ -309,7 +399,7 @@ unsafe fn maybe_window_proc(
 
         WM_MOUSELEAVE => {
             let (_, _, context) = get_context()?;
-            if context.gui_system.on_mouse_leave() {
+            if context.borrow_mut().gui_system.on_mouse_leave() {
                 run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
             }
         }
@@ -321,19 +411,24 @@ unsafe fn maybe_window_proc(
                 HIWORD(lparam as u32) as i16 as i32,
             );
             let (_, _, context) = get_context()?;
-            if context.gui_system.on_mouse_up(position) {
+            if context.borrow_mut().gui_system.on_mouse_up(position) {
                 run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
             }
-            run_jobs(context, hwnd)?;
+            run_jobs(&context, hwnd)?;
         }
 
         WM_ACTIVATE => {
             if wparam == WA_INACTIVE as WPARAM {
                 let (_, _, context) = get_context()?;
-                if context.gui_system.on_deactivate() {
+                if context.borrow_mut().gui_system.on_deactivate() {
                     run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
                 }
             }
+        }
+
+        WM_CLOSE => {
+            let (application, _, context) = get_context()?;
+            application.on_close(context.clone());
         }
 
         WM_DESTROY => {
@@ -360,7 +455,11 @@ unsafe extern "system" fn window_proc(
     }
 }
 
-fn create_window(name: &str, context: *mut SystemContext) -> APIResult<HWND> {
+fn create_window(
+    name: &str,
+    context: *mut SystemContext,
+    window_position: Option<WindowPosition>,
+) -> APIResult<HWND> {
     let mut wide_strings = WideStringManager::new();
 
     unsafe {
@@ -380,10 +479,10 @@ fn create_window(name: &str, context: *mut SystemContext) -> APIResult<HWND> {
 
         run_api!(RegisterClassW(&wnd_class))?;
         let hwnd = run_api!(CreateWindowExW(
-            0,                                // dwExStyle
-            wide_strings.from_str(name),      // class we registered
-            wide_strings.from_str(name),      // title
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE, // dwStyle
+            0,                           // dwExStyle
+            wide_strings.from_str(name), // class we registered
+            wide_strings.from_str(name), // title
+            WS_OVERLAPPEDWINDOW,         // dwStyle
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -399,6 +498,35 @@ fn create_window(name: &str, context: *mut SystemContext) -> APIResult<HWND> {
             GWL_USERDATA,
             std::mem::transmute(context)
         ))?;
+
+        if let Some(window_position) = window_position {
+            let mut adjusted_rect = RECT {
+                left: window_position.left_top.0,
+                top: window_position.left_top.1,
+                right: window_position.right_bottom.0,
+                bottom: window_position.right_bottom.1,
+            };
+
+            adjust_rect(get_desctop_rect()?, &mut adjusted_rect);
+            run_api!(SetWindowPos(
+                hwnd,
+                0 as HWND,
+                adjusted_rect.left,
+                adjusted_rect.top,
+                adjusted_rect.right - adjusted_rect.left,
+                adjusted_rect.bottom - adjusted_rect.top,
+                0
+            ))?;
+
+            if window_position.maximized {
+                run_api!(ShowWindow(hwnd, SW_SHOWMAXIMIZED))?;
+            } else {
+                run_api!(ShowWindow(hwnd, SW_SHOWDEFAULT))?;
+            }
+        } else {
+            run_api!(ShowWindow(hwnd, SW_SHOWDEFAULT))?;
+        }
+
         Ok(hwnd)
     }
 }
@@ -417,7 +545,11 @@ fn handle_message() -> APIResult<bool> {
     }
 }
 
-pub fn run_application(name: &str, application: Box<dyn Application>) -> APIResult<()> {
+pub fn run_application(
+    name: &str,
+    application: Box<dyn Application>,
+    window_position: Option<WindowPosition>,
+) -> APIResult<()> {
     std::panic::set_hook(Box::new(|info| {
         use backtrace::Backtrace;
         let bt = Backtrace::new();
@@ -427,26 +559,26 @@ pub fn run_application(name: &str, application: Box<dyn Application>) -> APIResu
         std::process::exit(3);
     }));
 
-    let font_factory = FontFactory::new(Rc::new(RefCell::new(font_loader::GDIFontLoader {})));
-    let clipboard = Rc::new(RefCell::new(crate::clipboard::Clipboard::new()));
-    let job_system = Rc::new(RefCell::new(JobSystem::new()));
+    let font_factory = FontFactory::new(font_loader::GDIFontLoader {});
+    let clipboard = application::clipboard::Clipboard::new(crate::clipboard::Clipboard::new());
+    let job_system = JobSystem::new();
     let gui_system = GuiSystem::new(job_system.clone());
 
     let mut system_context = SystemContext {
         application,
         buffer: None,
-        context: Context {
+        context: Rc::new(RefCell::new(Context {
             clipboard,
             job_system,
             gui_system,
             font_factory,
-        },
+        })),
     };
 
     system_context
         .application
-        .on_create(&mut system_context.context);
-    let _window = create_window(name, &mut system_context)?;
+        .on_create(system_context.context.clone());
+    let _window = create_window(name, &mut system_context, window_position)?;
     loop {
         if !handle_message()? {
             break;
