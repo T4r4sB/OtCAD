@@ -54,6 +54,7 @@ pub struct SystemContext {
 }
 
 pub struct Context {
+    hwnd: HWND,
     pub font_factory: FontFactory,
     pub clipboard: Clipboard,
     pub job_system: JobSystem,
@@ -136,12 +137,21 @@ fn wparam_to_key(code: WPARAM) -> Option<Key> {
         VK_NUMPAD7 => return Some(Key::Numpad7),
         VK_NUMPAD8 => return Some(Key::Numpad8),
         VK_NUMPAD9 => return Some(Key::Numpad9),
+        VK_ESCAPE => return Some(Key::Escape),
+        VK_RETURN => return Some(Key::Enter),
         _ => return None,
     }
 }
-fn adjust_window_size(context: &mut Context, hwnd: HWND) -> APIResult<()> {
-    let minimal_size = context.gui_system.get_minimal_size();
+
+fn adjust_window_size(context: Rc<RefCell<Context>>, hwnd: HWND) -> APIResult<()> {
+    let minimal_size = context.borrow().gui_system.get_minimal_size();
     let client_rect = get_client_rect(hwnd)?;
+    if client_rect.right - client_rect.left >= minimal_size.0
+        && client_rect.bottom - client_rect.top >= minimal_size.1
+    {
+        return Ok(());
+    }
+
     let dx = max(0, minimal_size.0 - (client_rect.right - client_rect.left));
     let dy = max(0, minimal_size.1 - (client_rect.bottom - client_rect.top));
     let mut window_rect = get_window_rect(hwnd)?;
@@ -166,10 +176,10 @@ fn adjust_window_size(context: &mut Context, hwnd: HWND) -> APIResult<()> {
     Ok(())
 }
 
-fn run_jobs(context: &Rc<RefCell<Context>>, hwnd: HWND) -> APIResult<()> {
+fn run_jobs(context: Rc<RefCell<Context>>, hwnd: HWND) -> APIResult<()> {
     let job_system = context.borrow_mut().job_system.clone();
-    job_system.run_all();
-    adjust_window_size(&mut context.borrow_mut(), hwnd)?;
+    job_system.run_all(); // jobs can borrow context
+    adjust_window_size(context, hwnd)?;
     Ok(())
 }
 
@@ -228,7 +238,7 @@ unsafe fn maybe_window_proc(
                 if context.borrow_mut().gui_system.on_key_down(key) {
                     run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
                 }
-                run_jobs(&context, hwnd)?;
+                run_jobs(context.clone(), hwnd)?;
             }
         }
 
@@ -324,7 +334,8 @@ unsafe fn maybe_window_proc(
         }
 
         WM_SIZE => {
-            let (application, _, _) = get_context()?;
+            let (application, _, context) = get_context()?;
+            adjust_window_size(context.clone(), hwnd)?;
             application.on_change_position(get_window_position(hwnd)?);
         }
 
@@ -339,13 +350,6 @@ unsafe fn maybe_window_proc(
             application.on_change_position(get_window_position(hwnd)?);
         }
 
-        WM_CREATE => {
-            let create_struct: &mut CREATESTRUCTW = std::mem::transmute(lparam);
-            let system_context: &mut SystemContext =
-                std::mem::transmute(create_struct.lpCreateParams);
-            adjust_window_size(&mut system_context.context.borrow_mut(), hwnd)?;
-        }
-
         WM_LBUTTONDOWN => {
             run_api!(SetCapture(hwnd))?;
             let position = (
@@ -356,7 +360,7 @@ unsafe fn maybe_window_proc(
             if context.borrow_mut().gui_system.on_mouse_down(position) {
                 run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
             }
-            run_jobs(&context, hwnd)?;
+            run_jobs(context.clone(), hwnd)?;
         }
 
         WM_MOUSEWHEEL => {
@@ -414,7 +418,7 @@ unsafe fn maybe_window_proc(
             if context.borrow_mut().gui_system.on_mouse_up(position) {
                 run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
             }
-            run_jobs(&context, hwnd)?;
+            run_jobs(context.clone(), hwnd)?;
         }
 
         WM_ACTIVATE => {
@@ -500,21 +504,13 @@ fn create_window(
         ))?;
 
         if let Some(window_position) = window_position {
-            let mut adjusted_rect = RECT {
-                left: window_position.left_top.0,
-                top: window_position.left_top.1,
-                right: window_position.right_bottom.0,
-                bottom: window_position.right_bottom.1,
-            };
-
-            adjust_rect(get_desctop_rect()?, &mut adjusted_rect);
             run_api!(SetWindowPos(
                 hwnd,
                 0 as HWND,
-                adjusted_rect.left,
-                adjusted_rect.top,
-                adjusted_rect.right - adjusted_rect.left,
-                adjusted_rect.bottom - adjusted_rect.top,
+                window_position.left_top.0,
+                window_position.left_top.1,
+                window_position.right_bottom.0 - window_position.left_top.0,
+                window_position.right_bottom.1 - window_position.left_top.1,
                 0
             ))?;
 
@@ -545,6 +541,28 @@ fn handle_message() -> APIResult<bool> {
     }
 }
 
+pub fn show_message(context: Rc<RefCell<Context>>, text: &str, caption: &str) {
+    let mut wide_strings = WideStringManager::new();
+    let hwnd = context.borrow().hwnd;
+    unsafe {
+        MessageBoxW(
+            hwnd,
+            wide_strings.from_str(text),
+            wide_strings.from_str(caption),
+            MB_OK,
+        );
+    }
+}
+
+pub fn get_screen_resolution() -> ImageSize {
+    unsafe {
+        (
+            GetSystemMetrics(SM_CXSCREEN) as usize,
+            GetSystemMetrics(SM_CYSCREEN) as usize,
+        )
+    }
+}
+
 pub fn run_application(
     name: &str,
     application: Box<dyn Application>,
@@ -553,7 +571,7 @@ pub fn run_application(
     std::panic::set_hook(Box::new(|info| {
         use backtrace::Backtrace;
         let bt = Backtrace::new();
-        println!("{:?}", info);
+        println!("{:#?}", info);
         println!("{:?}", bt);
         println!("exit(3)");
         std::process::exit(3);
@@ -568,6 +586,7 @@ pub fn run_application(
         application,
         buffer: None,
         context: Rc::new(RefCell::new(Context {
+            hwnd: 0 as HWND,
             clipboard,
             job_system,
             gui_system,
@@ -578,7 +597,8 @@ pub fn run_application(
     system_context
         .application
         .on_create(system_context.context.clone());
-    let _window = create_window(name, &mut system_context, window_position)?;
+    let hwnd = create_window(name, &mut system_context, window_position)?;
+    system_context.context.borrow_mut().hwnd = hwnd;
     loop {
         if !handle_message()? {
             break;

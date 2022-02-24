@@ -2,20 +2,7 @@ use directories::*;
 use serde::{Deserialize, Serialize};
 use std::path::*;
 
-use window::WindowPosition;
-
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Copy, Clone)]
-pub enum FontSize {
-    Small,
-    Average,
-    Big,
-}
-
-impl Default for FontSize {
-    fn default() -> Self {
-        FontSize::Small
-    }
-}
+use window::*;
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Copy, Clone)]
 pub enum ColorTheme {
@@ -58,10 +45,25 @@ pub struct SnapOptions {
     pub snap_centers: bool,
 }
 
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Copy, Clone)]
+pub struct ConfigFontSize(pub i32);
+
+impl ConfigFontSize {
+    pub fn adjusted(self) -> Self {
+        Self(std::cmp::max(10, std::cmp::min(self.0, 100)))
+    }
+}
+
+impl Default for ConfigFontSize {
+    fn default() -> Self {
+        Self((get_screen_resolution().0 as f32).sqrt() as i32 / 2).adjusted()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
     #[serde(default)]
-    pub font_size: FontSize,
+    pub font_size: ConfigFontSize,
 
     #[serde(default)]
     pub color_theme: ColorTheme,

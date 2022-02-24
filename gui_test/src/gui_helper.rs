@@ -1,3 +1,4 @@
+use application::clipboard::*;
 use application::font::*;
 use application::gui::gui_components::*;
 use application::gui::*;
@@ -10,7 +11,7 @@ pub fn create_default_size_button(text: &str, font: Font) -> Button {
             SizeConstraint::fixed(text_size.1 as i32 + 2),
         ),
         text.to_string(),
-        font.clone(),
+        font,
     )
 }
 
@@ -23,8 +24,21 @@ pub fn create_default_size_check_button(text: &str, font: Font) -> Button {
             SizeConstraint::fixed(text_size.1 as i32 + 2),
         ),
         text.to_string(),
-        font.clone(),
+        font,
     )
+}
+
+pub fn create_default_size_edit(text: &str, font: Font, clipboard: Clipboard) -> Edit {
+    let text_size = font.get_size(text);
+    Edit::new(
+        SizeConstraints(
+            SizeConstraint::fixed((text_size.0 + text_size.1) as i32),
+            SizeConstraint::fixed(text_size.1 as i32 + 2),
+        ),
+        font,
+        clipboard,
+    )
+    .text(text)
 }
 
 pub fn create_default_size_text_box(text: &str, font: Font) -> TextBox {
@@ -35,6 +49,6 @@ pub fn create_default_size_text_box(text: &str, font: Font) -> TextBox {
             SizeConstraint::fixed(text_size.1 as i32 + 2),
         ),
         text.to_string(),
-        font.clone(),
+        font,
     )
 }

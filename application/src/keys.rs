@@ -18,4 +18,6 @@ pub enum Key {
     Numpad7,
     Numpad8,
     Numpad9,
+    Escape,
+    Enter,
 }

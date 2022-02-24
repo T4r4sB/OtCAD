@@ -13,7 +13,8 @@ pub fn create_bottom_panel(
     font: &Font,
     config: Rc<RefCell<Config>>,
 ) -> Rc<RefCell<Container>> {
-    let font_height = font.get_size("8").1 as i32 + 2;
+    let font_symbol_size = font.get_size("8");
+    let font_height = font_symbol_size.1 as i32 + 2;
 
     let bottom_panel = root.add_child(Container::new(
         SizeConstraints(
@@ -56,6 +57,13 @@ pub fn create_bottom_panel(
             }),
     );
 
+    let _es = bottom_panel
+        .borrow_mut()
+        .add_child(EmptySpace::new(SizeConstraints(
+            SizeConstraint::fixed(font_symbol_size.0 as i32 / 2),
+            SizeConstraint::flexible(0),
+        )));
+
     let config_capture = Rc::downgrade(&config);
     let _endpoints_button = bottom_panel.borrow_mut().add_child(
         create_default_size_check_button("Концы", font.clone())
@@ -67,6 +75,13 @@ pub fn create_bottom_panel(
             }),
     );
 
+    let _es = bottom_panel
+        .borrow_mut()
+        .add_child(EmptySpace::new(SizeConstraints(
+            SizeConstraint::fixed(font_symbol_size.0 as i32 / 2),
+            SizeConstraint::flexible(0),
+        )));
+
     let config_capture = Rc::downgrade(&config);
     let _intersections_button = bottom_panel.borrow_mut().add_child(
         create_default_size_check_button("Пересечения", font.clone())
@@ -77,6 +92,13 @@ pub fn create_bottom_panel(
                 });
             }),
     );
+
+    let _es = bottom_panel
+        .borrow_mut()
+        .add_child(EmptySpace::new(SizeConstraints(
+            SizeConstraint::fixed(font_symbol_size.0 as i32 / 2),
+            SizeConstraint::flexible(0),
+        )));
 
     let config_capture = Rc::downgrade(&config);
     let _centers_button = bottom_panel.borrow_mut().add_child(

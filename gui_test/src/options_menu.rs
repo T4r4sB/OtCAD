@@ -5,6 +5,8 @@ use application::font::*;
 use application::gui::gui_components::*;
 use application::gui::*;
 
+use window::show_message;
+
 use crate::config::*;
 use crate::gui_helper::*;
 use crate::GuiTest;
@@ -27,56 +29,85 @@ pub fn create_options_menu(
         ),
     );
 
-    let font_size_selector = options_menu.borrow_mut().add_child(RadioGroup::new(
+    let font_size_line = options_menu.borrow_mut().add_child(Container::new(
         SizeConstraints(
             SizeConstraint::flexible(0),
             SizeConstraint::fixed(font_height),
         ),
         ContainerLayout::Horizontal,
-        create_default_size_text_box("Размер шрифта:", font.clone()),
     ));
 
-    let _small_font_button = font_size_selector
+    let _font_size_caption = font_size_line
         .borrow_mut()
-        .add_button(create_default_size_check_button("Мелкий", font.clone()));
-
-    let _average_font_button = font_size_selector
+        .add_child(create_default_size_text_box("Размер шрифта:", font.clone()));
+    let font_size_input = font_size_line
         .borrow_mut()
-        .add_button(create_default_size_check_button("Средний", font.clone()));
+        .add_child(create_default_size_edit(
+            "8888",
+            font.clone(),
+            context.borrow().clipboard.clone(),
+        ));
 
-    let __font_button = font_size_selector
-        .borrow_mut()
-        .add_button(create_default_size_check_button("Большой", font.clone()));
+    fn reset_font_input(config: Rc<RefCell<Config>>, font_size_input: Rc<RefCell<Edit>>) {
+        font_size_input
+            .borrow_mut()
+            .set_text(&format!("{}", config.borrow().font_size.0));
+        font_size_input.borrow_mut().set_cursor_position(0);
+    }
 
+    reset_font_input(config.clone(), font_size_input.clone());
+
+    let font_size_input_capture = Rc::downgrade(&font_size_input);
     let config_capture = Rc::downgrade(&config);
-    let context_capture = Rc::downgrade(&context);
-    font_size_selector
-        .borrow_mut()
-        .change_index(match config.borrow().font_size {
-            FontSize::Small => 0,
-            FontSize::Average => 1,
-            FontSize::Big => 2,
-        });
-    font_size_selector
-        .borrow_mut()
-        .set_callback(move |fs_index| {
-            config_capture.upgrade().map(|config| {
-                let old_font_size = config.borrow().font_size;
-                match fs_index {
-                    0 => config.borrow_mut().font_size = FontSize::Small,
-                    1 => config.borrow_mut().font_size = FontSize::Average,
-                    2 => config.borrow_mut().font_size = FontSize::Big,
-                    _ => {}
-                }
 
-                let new_font_size = config.borrow().font_size;
-                if new_font_size != old_font_size {
-                    context_capture.upgrade().map(|context| {
-                        GuiTest::rebuild_gui(config.clone(), context.clone(), OPTIONS_MENU_INDEX);
-                    });
-                }
+    font_size_input.borrow_mut().set_skip_callback(move || {
+        font_size_input_capture.upgrade().map(|font_size_input| {
+            config_capture.upgrade().map(|config| {
+                reset_font_input(config.clone(), font_size_input.clone());
             });
         });
+    });
+
+    let font_size_input_capture = Rc::downgrade(&font_size_input);
+    let config_capture = Rc::downgrade(&config);
+    let context_capture = Rc::downgrade(&context);
+    font_size_input
+        .borrow_mut()
+        .set_enter_callback(move |text| {
+            config_capture.upgrade().map(|config| {
+                context_capture.upgrade().map(|context| {
+                    let old_font_size = config.borrow().font_size;
+                    font_size_input_capture.upgrade().map(|font_size_input| {
+                        match text.parse::<i32>() {
+                            Ok(new_font_size) => {
+                                config.borrow_mut().font_size =
+                                    ConfigFontSize(new_font_size).adjusted();
+                                reset_font_input(config.clone(), font_size_input.clone());
+                            }
+                            Err(_) => {
+                                show_message(
+                                    context.clone(),
+                                    &format!("{} - не число!", text),
+                                    "Ошибка ввода",
+                                );
+                                reset_font_input(config.clone(), font_size_input.clone());
+                            }
+                        }
+                    });
+                    let new_font_size = config.borrow().font_size;
+                    if old_font_size != new_font_size {
+                        GuiTest::rebuild_gui(config.clone(), context.clone(), OPTIONS_MENU_INDEX);
+                    }
+                });
+            });
+        });
+
+    let _font_size_hint = font_size_line
+        .borrow_mut()
+        .add_child(create_default_size_text_box(
+            "(нажмите ENTER после ввода размера)",
+            font.clone(),
+        ));
 
     let font_anti_aliasing_selector = options_menu.borrow_mut().add_child(RadioGroup::new(
         SizeConstraints(

@@ -504,15 +504,34 @@ impl GuiControl for TextBox {
     }
 }
 
+#[derive(Clone)]
+pub struct SkipCallback(Rc<dyn Fn() + 'static>);
+
+impl std::fmt::Debug for SkipCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("SkipCallback")
+    }
+}
+
+#[derive(Clone)]
+pub struct EnterCallback(Rc<dyn Fn(&str) + 'static>);
+
+impl std::fmt::Debug for EnterCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("EnterCallback")
+    }
+}
+
 #[derive(Debug)]
 pub struct Edit {
     base: GuiControlBase,
-
     text: Vec<char>,
     font: Font,
     clipboard: Clipboard,
     scroll_position: i32,
     cursor_position: i32,
+    skip_callback: Option<SkipCallback>,
+    enter_callback: Option<EnterCallback>,
 }
 
 impl Edit {
@@ -526,7 +545,42 @@ impl Edit {
             clipboard,
             scroll_position: 0,
             cursor_position: 0,
+            skip_callback: None,
+            enter_callback: None,
         }
+    }
+
+    pub fn set_text(&mut self, text: &str) {
+        self.text = text.chars().collect();
+        self.adjust_cursor_position();
+    }
+
+    pub fn text(mut self, text: &str) -> Self {
+        self.set_text(text);
+        self
+    }
+
+    pub fn set_skip_callback(&mut self, callback: impl Fn() + 'static) {
+        self.skip_callback = Some(SkipCallback(Rc::new(callback)));
+    }
+
+    pub fn skip_callback(mut self, skip_callback: impl Fn() + 'static) -> Self {
+        self.set_skip_callback(skip_callback);
+        self
+    }
+
+    pub fn set_enter_callback(&mut self, enter_callback: impl Fn(&str) + 'static) {
+        self.enter_callback = Some(EnterCallback(Rc::new(enter_callback)));
+    }
+
+    pub fn enter_callback(mut self, enter_callback: impl Fn(&str) + 'static) -> Self {
+        self.set_enter_callback(enter_callback);
+        self
+    }
+
+    pub fn set_cursor_position(&mut self, cursor_position: i32) {
+        self.cursor_position = cursor_position;
+        self.adjust_cursor_position();
     }
 
     fn adjust_cursor_position(&mut self) {
@@ -682,7 +736,7 @@ impl GuiControl for Edit {
                 }
                 return false;
             }
-            GuiMessage::KeyDown(k) => {
+            GuiMessage::KeyDown(k, job_system, unfocus) => {
                 match k {
                     Key::Left => {
                         if self.cursor_position > 0 {
@@ -714,6 +768,24 @@ impl GuiControl for Edit {
                         }
                     }
                     Key::Insert => return self.paste(),
+                    Key::Escape => {
+                        if let Some(SkipCallback(skip_callback)) = &self.skip_callback {
+                            job_system.add_callback(skip_callback.clone());
+                        }
+                        *unfocus = true;
+                        return true;
+                    }
+                    Key::Enter => {
+                        if let Some(EnterCallback(enter_callback)) = &self.enter_callback {
+                            let text: String = self.text.iter().collect();
+                            let enter_callback_capture = Rc::downgrade(enter_callback);
+                            job_system.add_callback(Rc::new(move || {
+                                enter_callback_capture.upgrade().map(|c| c(&text));
+                            }));
+                        }
+                        *unfocus = true;
+                        return true;
+                    }
                     _ => {}
                 }
 

@@ -33,14 +33,14 @@ struct CadColorTheme {
 
 static CAD_DARK_THEME: CadColorTheme = CadColorTheme {
     background_color: 0x000000,
-    line_color: 0xAAAAAA,
-    line_aa_color: 0xFFFFFF,
+    line_color: 0x88AA88,
+    line_aa_color: 0xCCFFCC,
 };
 
 static CAD_BEIGE_THEME: CadColorTheme = CadColorTheme {
     background_color: 0xDDCCAA,
-    line_color: 0x000000,
-    line_aa_color: 0x000000,
+    line_color: 0x442200,
+    line_aa_color: 0x442200,
 };
 
 static CAD_LIGHT_THEME: CadColorTheme = CadColorTheme {
@@ -120,6 +120,9 @@ impl GuiControl for CadView {
 
                 return true;
             }
+            GuiMessage::MouseDown(_) => {
+                return true;
+            }
             _ => return false,
         }
     }
@@ -139,12 +142,7 @@ impl GuiTest {
         context: Rc<RefCell<window::Context>>,
         top_panel_index: usize,
     ) {
-        let font_size = match config.borrow().font_size {
-            FontSize::Small => 15,
-            FontSize::Average => 20,
-            FontSize::Big => 31,
-        };
-
+        let font_size = config.borrow().font_size.0;
         let font_aa_mode = config.borrow().font_aa_mode;
 
         let default_font =

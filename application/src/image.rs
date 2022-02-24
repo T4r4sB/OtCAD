@@ -183,9 +183,17 @@ impl<'i, Pixel> ImageViewMut<'i, Pixel> {
     }
 
     pub fn fill(&mut self, apply: impl Fn(&mut Pixel)) {
-        for dst_line in self.lines_mut(..) {
-            for dst in dst_line {
-                apply(dst);
+        unsafe {
+            let mut dsty = self.memory;
+            let dsty_end = self.memory.add(self.stride * self.size.1);
+            while dsty < dsty_end {
+                let mut dstx = dsty;
+                let dstx_end = dstx.add(self.size.0);
+                while dstx < dstx_end {
+                    apply(&mut *dstx);
+                    dstx = dstx.add(1);
+                }
+                dsty = dsty.add(self.stride);
             }
         }
     }

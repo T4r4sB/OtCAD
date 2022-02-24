@@ -90,7 +90,7 @@ pub enum GuiMessage<'i, 'j> {
     MouseUp(Position, JobSystem),
     MouseWheel(Position, i32),
     Char(char),
-    KeyDown(Key),
+    KeyDown(Key, JobSystem, &'i mut bool),
     KeyUp(Key),
 }
 
@@ -372,7 +372,17 @@ impl GuiSystem {
 
     pub fn on_key_down(&mut self, k: Key) -> bool {
         if let Some(focus) = self.get_focus() {
-            return focus.borrow_mut().on_message(GuiMessage::KeyDown(k));
+            let mut unfocus = false;
+            let result = focus.borrow_mut().on_message(GuiMessage::KeyDown(
+                k,
+                self.job_system.clone(),
+                &mut unfocus,
+            ));
+            if unfocus {
+                self.updated = false;
+                self.set_focus(None);
+            }
+            return result;
         }
 
         return false;
