@@ -1,11 +1,13 @@
 pub mod gui_components;
 
 use crate::draw_context::*;
+use crate::font::*;
 use crate::image::*;
 use crate::job_system::*;
 use crate::keys::*;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::rc::{Rc, Weak};
 
@@ -53,12 +55,22 @@ impl Rect {
     }
 }
 
+#[derive(Clone)]
+pub struct HotkeyCallback(Rc<dyn Fn() + 'static>);
+
+impl std::fmt::Debug for HotkeyCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad("HotkeyCallback")
+    }
+}
+
 #[derive(Debug)]
 pub struct GuiControlBase {
     pub(crate) size_constraints: SizeConstraints,
     pub(crate) current_size_constraints: SizeConstraints,
     pub(crate) self_ref: Option<Weak<RefCell<dyn GuiControl>>>,
     pub visible: bool,
+    pub(crate) need_redraw: bool,
     pub(crate) focus: bool,
     pub(crate) highlight: bool,
     pub(crate) pressed: bool,
@@ -67,24 +79,38 @@ pub struct GuiControlBase {
 
 impl GuiControlBase {
     pub fn new(size_constraints: SizeConstraints) -> Self {
-        Self {
+        let result = Self {
             size_constraints,
             current_size_constraints: size_constraints,
             self_ref: None,
             visible: true,
+            need_redraw: false,
             focus: false,
             highlight: false,
             pressed: false,
             rect: Rect::default(),
-        }
+        };
+
+        result
+    }
+
+    pub fn can_draw(&mut self, force: bool) -> bool {
+        let result = self.visible && (self.need_redraw || force);
+        self.need_redraw = false;
+        result
+    }
+
+    pub fn erase_background(buffer: &mut ImageViewMut<u32>, theme: &GuiColorTheme) {
+        buffer.fill(|p| *p = theme.background);
     }
 }
 
 pub enum GuiMessage<'i, 'j> {
-    Draw(&'i mut ImageViewMut<'j, u32>, &'i GuiColorTheme),
+    Draw(&'i mut ImageViewMut<'j, u32>, &'i GuiColorTheme, bool),
     UpdateSizeConstraints(&'i mut SizeConstraints),
     FindDestination(&'i mut Rc<RefCell<dyn GuiControl>>, Position),
     RectUpdated,
+    FocusLose(JobSystem),
     MouseDown(Position),
     MouseMove(Position),
     MouseUp(Position, JobSystem),
@@ -92,6 +118,12 @@ pub enum GuiMessage<'i, 'j> {
     Char(char),
     KeyDown(Key, JobSystem, &'i mut bool),
     KeyUp(Key),
+    Hotkey(Hotkey, &'i mut bool),
+    GetHotkeys(&'i mut HashMap<Hotkey, HotkeyCallback>, bool),
+    Show,
+    Hide,
+    Create,
+    Destroy,
 }
 
 pub trait GuiControl: std::fmt::Debug + 'static {
@@ -105,7 +137,9 @@ pub(crate) fn avg_color(color1: u32, color2: u32) -> u32 {
 
 #[derive(Debug, Copy, Clone)]
 pub struct GuiColorTheme {
+    pub background: u32,
     pub font: u32,
+    pub hotkey: u32,
     pub splitter: u32,
     pub highlight: u32,
     pub pressed: u32,
@@ -116,9 +150,11 @@ pub struct GuiColorTheme {
 }
 
 pub static DARK_THEME: GuiColorTheme = GuiColorTheme {
+    background: 0x000000,
     font: 0xCCCCCC,
+    hotkey: 0xAACCAA,
     splitter: 0xAACCAA,
-    highlight: 0x999999,
+    highlight: 0xAAAAAA,
     pressed: 0xFFFFFF,
     selected: 0x66CC66,
     inactive: 0x444444,
@@ -127,7 +163,9 @@ pub static DARK_THEME: GuiColorTheme = GuiColorTheme {
 };
 
 pub static LIGHT_THEME: GuiColorTheme = GuiColorTheme {
+    background: 0xFFFFFF,
     font: 0x000000,
+    hotkey: 0x664422,
     splitter: 0x664422,
     highlight: 0x666666,
     pressed: 0x222222,
@@ -145,15 +183,24 @@ pub struct GuiSystem {
     pressed: Option<Weak<RefCell<dyn GuiControl>>>,
     color_theme: GuiColorTheme,
     updated: bool,
+    updated_hotkeys: bool,
+    hotkeys: HashMap<Hotkey, HotkeyCallback>,
+    global_hotkeys: HashMap<Hotkey, HotkeyCallback>,
 }
 
 macro_rules! set_property {
-    ($self: ident, $new: ident, $getter: ident, $field: ident) => {
-        let off_old_flag = || {
-            if let Some(old) = $self.$getter() {
-                let mut old = old.borrow_mut();
-                let old_base = old.get_base_mut();
-                old_base.$field = false;
+    ($self: ident, $new: ident, $getter: ident, $field: ident, $handle_lose: expr) => {
+        let off_old_flag = |s: &mut GuiSystem| {
+            if let Some(old_ptr) = s.$getter() {
+                GuiSystem::mark_to_redraw(&old_ptr);
+                let mut old = old_ptr.borrow_mut();
+                old.get_base_mut().$field = false;
+                if $handle_lose {
+                    if old.on_message(GuiMessage::FocusLose(s.job_system.clone())) {
+                        s.updated = false;
+                        s.updated_hotkeys = false;
+                    }
+                }
                 return true;
             } else {
                 return false;
@@ -162,18 +209,18 @@ macro_rules! set_property {
 
         if let Some(new_ptr) = $new {
             {
+                GuiSystem::mark_to_redraw(&new_ptr);
                 let mut new = new_ptr.borrow_mut();
                 let new_base = new.get_base_mut();
                 if new_base.$field {
                     return false;
                 }
-
                 new_base.$field = true;
             }
-            off_old_flag();
+            off_old_flag($self);
             $self.$field = Some(Rc::downgrade(&new_ptr));
         } else {
-            if off_old_flag() {
+            if off_old_flag($self) {
                 $self.$field = None;
             } else {
                 return false;
@@ -194,6 +241,9 @@ impl GuiSystem {
             pressed: None,
             color_theme: LIGHT_THEME,
             updated: false,
+            updated_hotkeys: false,
+            hotkeys: Default::default(),
+            global_hotkeys: Default::default(),
         }
     }
 
@@ -202,6 +252,10 @@ impl GuiSystem {
         assert!(rect.right_bottom.1 >= rect.left_top.1);
         control.get_base_mut().rect = rect;
         control.on_message(GuiMessage::RectUpdated);
+    }
+
+    pub fn mark_to_redraw(control: &Rc<RefCell<dyn GuiControl>>) {
+        control.borrow_mut().get_base_mut().need_redraw = true;
     }
 
     pub fn get_child(
@@ -225,8 +279,12 @@ impl GuiSystem {
         self.focus.as_ref().and_then(Weak::upgrade).clone()
     }
 
-    fn set_focus(&mut self, new_focus: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
-        set_property!(self, new_focus, get_focus, focus);
+    fn set_focus(
+        &mut self,
+        new_focus: Option<Rc<RefCell<dyn GuiControl>>>,
+        handle_lose: bool,
+    ) -> bool {
+        set_property!(self, new_focus, get_focus, focus, handle_lose);
     }
 
     fn get_highlight(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
@@ -234,7 +292,7 @@ impl GuiSystem {
     }
 
     fn set_highlight(&mut self, new_highlight: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
-        set_property!(self, new_highlight, get_highlight, highlight);
+        set_property!(self, new_highlight, get_highlight, highlight, false);
     }
 
     fn get_pressed(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
@@ -242,7 +300,7 @@ impl GuiSystem {
     }
 
     fn set_pressed(&mut self, new_pressed: Option<Rc<RefCell<dyn GuiControl>>>) -> bool {
-        set_property!(self, new_pressed, get_pressed, pressed);
+        set_property!(self, new_pressed, get_pressed, pressed, false);
     }
 
     pub fn on_draw(&mut self, draw_context: &mut DrawContext) {
@@ -257,10 +315,13 @@ impl GuiSystem {
                     },
                 );
                 self.updated = true;
+                root.get_base_mut().need_redraw = true;
             }
+
             root.on_message(GuiMessage::Draw(
                 &mut draw_context.buffer,
                 &self.color_theme,
+                false,
             ));
         }
     }
@@ -290,9 +351,12 @@ impl GuiSystem {
                 .borrow_mut()
                 .on_message(GuiMessage::MouseDown(position))
             {
-                let changed_focus = self.set_focus(Some(child.clone()));
-                let changed_pressed = self.set_pressed(Some(child));
+                let changed_focus = self.set_focus(Some(child.clone()), true);
+                let changed_pressed = self.set_pressed(Some(child.clone()));
+                GuiSystem::mark_to_redraw(&child);
                 return changed_focus || changed_pressed;
+            } else {
+                return self.set_focus(None, true);
             }
         }
         return false;
@@ -309,7 +373,10 @@ impl GuiSystem {
             let handled = handler
                 .borrow_mut()
                 .on_message(GuiMessage::MouseMove(position));
-            let changed_highlight = self.set_highlight(Some(handler));
+            let changed_highlight = self.set_highlight(Some(handler.clone()));
+            if handled {
+                GuiSystem::mark_to_redraw(&handler);
+            }
             return handled || changed_highlight;
         }
 
@@ -324,9 +391,13 @@ impl GuiSystem {
             } else {
                 Self::get_child(&root, position)
             };
-            return handler
+            let handled = handler
                 .borrow_mut()
                 .on_message(GuiMessage::MouseWheel(position, delta));
+            if handled {
+                GuiSystem::mark_to_redraw(&handler);
+            }
+            return handled;
         }
 
         return false;
@@ -339,7 +410,7 @@ impl GuiSystem {
     pub fn on_deactivate(&mut self) -> bool {
         let changed_highlight = self.set_highlight(None);
         let changed_pressed = self.set_pressed(None);
-        let changed_focus = self.set_focus(None);
+        let changed_focus = self.set_focus(None, false);
         return changed_highlight || changed_pressed || changed_focus;
     }
 
@@ -356,6 +427,8 @@ impl GuiSystem {
                 .on_message(GuiMessage::MouseUp(position, self.job_system.clone()))
             {
                 self.updated = false;
+                self.updated_hotkeys = false;
+                GuiSystem::mark_to_redraw(&handler);
                 return self.set_pressed(None);
             }
         }
@@ -364,7 +437,11 @@ impl GuiSystem {
 
     pub fn on_char(&mut self, c: char) -> bool {
         if let Some(focus) = self.get_focus() {
-            return focus.borrow_mut().on_message(GuiMessage::Char(c));
+            let handled = focus.borrow_mut().on_message(GuiMessage::Char(c));
+            if handled {
+                GuiSystem::mark_to_redraw(&focus);
+            }
+            return handled;
         }
 
         return false;
@@ -373,16 +450,57 @@ impl GuiSystem {
     pub fn on_key_down(&mut self, k: Key) -> bool {
         if let Some(focus) = self.get_focus() {
             let mut unfocus = false;
-            let result = focus.borrow_mut().on_message(GuiMessage::KeyDown(
+            let handled = focus.borrow_mut().on_message(GuiMessage::KeyDown(
                 k,
                 self.job_system.clone(),
                 &mut unfocus,
             ));
             if unfocus {
                 self.updated = false;
-                self.set_focus(None);
+                self.updated_hotkeys = false;
+                self.set_focus(None, false);
             }
-            return result;
+            if handled {
+                GuiSystem::mark_to_redraw(&focus);
+            }
+            return handled;
+        }
+
+        return false;
+    }
+
+    pub fn on_hotkey(&mut self, k: Hotkey) -> bool {
+        if !self.updated_hotkeys {
+            self.hotkeys.clear();
+            if let Some(root) = &self.root {
+                root.borrow_mut()
+                    .on_message(GuiMessage::GetHotkeys(&mut self.hotkeys, true));
+            }
+            self.updated_hotkeys = true;
+        }
+
+        if let Some(focus) = self.get_focus() {
+            let mut use_default_keydown = false;
+            if focus
+                .borrow_mut()
+                .on_message(GuiMessage::Hotkey(k, &mut use_default_keydown))
+            {
+                GuiSystem::mark_to_redraw(&focus);
+                return true;
+            }
+
+            if use_default_keydown {
+                return false;
+            }
+        }
+
+        if let Some(HotkeyCallback(callback)) =
+            self.global_hotkeys.get(&k).or_else(|| self.hotkeys.get(&k))
+        {
+            self.job_system.add_callback(callback.clone());
+            self.updated = false;
+            self.updated_hotkeys = false;
+            return true;
         }
 
         return false;
@@ -390,7 +508,11 @@ impl GuiSystem {
 
     pub fn on_key_up(&mut self, k: Key) -> bool {
         if let Some(focus) = self.get_focus() {
-            return focus.borrow_mut().on_message(GuiMessage::KeyUp(k));
+            let handled = focus.borrow_mut().on_message(GuiMessage::KeyUp(k));
+            if handled {
+                GuiSystem::mark_to_redraw(&focus);
+            }
+            return handled;
         }
 
         return false;
@@ -406,8 +528,39 @@ impl GuiSystem {
     }
 
     pub fn set_root<Control: GuiControl>(&mut self, control: Control) -> Rc<RefCell<Control>> {
+        if let Some(root) = &self.root {
+            let mut root = root.borrow_mut();
+            if root.get_base_mut().visible {
+                root.on_message(GuiMessage::Hide);
+            }
+            root.on_message(GuiMessage::Destroy);
+        }
+
         let (untyped, typed) = Self::create_rc_by_control(control);
+        {
+            let mut untyped = untyped.borrow_mut();
+            if untyped.get_base_mut().visible {
+                untyped.on_message(GuiMessage::Show);
+            }
+            untyped.on_message(GuiMessage::Create);
+        }
         self.root = Some(untyped);
         typed
+    }
+
+    pub fn default_size(text: &str, hotkey: Option<Hotkey>, font: &Font) -> SizeConstraints {
+        let text_size = font.get_size(text);
+        if let Some(hotkey) = hotkey {
+            let hotkey_size = font.get_size(&format!("{:?}", hotkey));
+            SizeConstraints(
+                SizeConstraint::fixed((text_size.0 + hotkey_size.0 + text_size.1 * 3 / 2) as i32),
+                SizeConstraint::fixed(text_size.1 as i32 + 2),
+            )
+        } else {
+            SizeConstraints(
+                SizeConstraint::fixed((text_size.0 + text_size.1) as i32),
+                SizeConstraint::fixed(text_size.1 as i32 + 2),
+            )
+        }
     }
 }

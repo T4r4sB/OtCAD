@@ -24,9 +24,11 @@ pub fn create_file_menu(parent: &mut TabControl, font: &Font) -> Rc<RefCell<Cont
         ContainerLayout::Horizontal,
     ));
 
-    let _new_button = default_panel
-        .borrow_mut()
-        .add_child(create_default_size_button("Новый", font.clone()));
+    let _new_button = default_panel.borrow_mut().add_child(
+        create_default_size_button("Новый", font.clone()).callback(|| {
+            panic!("test panic");
+        }),
+    );
 
     let _open_button = default_panel
         .borrow_mut()

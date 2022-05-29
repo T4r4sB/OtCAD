@@ -26,32 +26,30 @@ mod top_panel;
 mod transform_menu;
 
 struct CadColorTheme {
-    background_color: u32,
     line_color: u32,
     line_aa_color: u32,
 }
 
 static CAD_DARK_THEME: CadColorTheme = CadColorTheme {
-    background_color: 0x000000,
     line_color: 0x88AA88,
     line_aa_color: 0xCCFFCC,
 };
 
 static CAD_BEIGE_THEME: CadColorTheme = CadColorTheme {
-    background_color: 0xDDCCAA,
     line_color: 0x442200,
     line_aa_color: 0x442200,
 };
 
 static CAD_LIGHT_THEME: CadColorTheme = CadColorTheme {
-    background_color: 0xFFFFFF,
     line_color: 0x000000,
     line_aa_color: 0x000000,
 };
 
 static BEIGE_THEME: GuiColorTheme = GuiColorTheme {
+    background: 0xDDCCAA,
     font: 0x000000,
-    splitter: 224466,
+    hotkey: 0x224466,
+    splitter: 0x224466,
     highlight: 0x666666,
     pressed: 0x222222,
     selected: 0x4499CC,
@@ -98,8 +96,9 @@ impl GuiControl for CadView {
 
     fn on_message(&mut self, m: GuiMessage) -> bool {
         match m {
-            GuiMessage::Draw(buf, _) => {
-                if self.base.visible {
+            GuiMessage::Draw(buf, theme, force) => {
+                if self.base.can_draw(force) {
+                    GuiControlBase::erase_background(buf, theme);
                     let curve = Curve::<f32>::circle(Point::new(100.0, 100.0), 50.0);
                     let e = Entity::Curve(curve);
                     let mut buffer = vec![(0, 0); buf.get_size().1 * 4];
@@ -206,11 +205,7 @@ impl window::Application for GuiTest {
         }
     }
 
-    fn on_draw(&self, draw_context: &mut DrawContext) {
-        draw_context.buffer.fill(|p| {
-            *p = get_cad_color_theme(&self.config.borrow()).background_color;
-        });
-    }
+    fn on_draw(&self, _: &mut DrawContext) {}
 }
 
 fn main() {

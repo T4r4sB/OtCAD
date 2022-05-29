@@ -88,9 +88,11 @@ pub fn get_project_dir() -> Option<ProjectDirs> {
     ProjectDirs::from("ru", "T4r4sB", "OtCAD")
 }
 
+static CONFIG_FILE: &str = "config.json";
+
 pub fn load_config() -> Option<Config> {
     let config_dir = get_project_dir()?.config_dir().to_path_buf();
-    let config_file = Path::join(&config_dir, "config.json");
+    let config_file = Path::join(&config_dir, CONFIG_FILE);
     std::fs::create_dir_all(&config_dir).ok()?;
 
     let file = std::fs::File::open(config_file).ok()?;
@@ -101,7 +103,7 @@ pub fn load_config() -> Option<Config> {
 
 pub fn save_config(config: &Config) -> Option<()> {
     let config_dir = get_project_dir()?.config_dir().to_path_buf();
-    let config_file = Path::join(&config_dir, "config.json");
+    let config_file = Path::join(&config_dir, CONFIG_FILE);
     std::fs::create_dir_all(&config_dir).ok()?;
     serde_json::to_writer_pretty(&std::fs::File::create(config_file).ok()?, &config).ok()?;
     Some(())
