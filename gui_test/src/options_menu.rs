@@ -6,11 +6,11 @@ use application::callback_body;
 use application::font::*;
 use application::gui::gui_components::*;
 use application::gui::*;
-use application::keys::*;
 
 use window::show_message;
 
 use crate::config::*;
+use crate::editor::*;
 use crate::gui_helper::*;
 use crate::GuiTest;
 use crate::OPTIONS_MENU_INDEX;
@@ -18,14 +18,17 @@ use crate::OPTIONS_MENU_INDEX;
 pub fn create_options_menu(
     parent: &mut TabControl,
     font: &Font,
-    config: Rc<RefCell<Config>>,
+    editor: Rc<RefCell<Editor>>,
     context: Rc<RefCell<window::Context>>,
 ) -> Rc<RefCell<Container>> {
+    let config = editor.borrow().config.clone();
     let font_height = font.get_size("8").1 as i32 + 2;
     let menu_caption = "Опции";
     let options_menu = parent.add_tab(
         menu_caption.to_string(),
-        font.get_size(menu_caption).0 as i32 + font_height,
+        GuiSystem::default_size(&menu_caption, None, &font)
+            .0
+            .absolute,
         Container::new(
             SizeConstraints(SizeConstraint::flexible(0), SizeConstraint::fixed(0)),
             ContainerLayout::Vertical,
@@ -66,7 +69,8 @@ pub fn create_options_menu(
     ));
 
     font_size_input.borrow_mut().set_enter_callback(callback!(
-        [font_size_input, config, context] (text) {
+        [font_size_input, editor, context] (text) {
+            let config = editor.borrow().config.clone();
             let old_font_size = config.borrow().font_size;
             match text.parse::<i32>() {
                 Ok(new_font_size) => {
@@ -85,7 +89,7 @@ pub fn create_options_menu(
 
             let new_font_size = config.borrow().font_size;
             if old_font_size != new_font_size {
-                GuiTest::rebuild_gui(config.clone(), context.clone(), OPTIONS_MENU_INDEX);
+                GuiTest::rebuild_gui(editor.clone(), context.clone(), OPTIONS_MENU_INDEX);
             }
         }
     ));
@@ -104,23 +108,23 @@ pub fn create_options_menu(
 
     let _no_font_anti_alisaing_button = font_anti_aliasing_selector
         .borrow_mut()
-        .add_button(create_default_size_check_button("Нету", font.clone()));
+        .add_button(create_default_size_radio_button("Нету", font.clone()));
 
     let _font_anti_alisaing_button = font_anti_aliasing_selector
         .borrow_mut()
-        .add_button(create_default_size_check_button("Пиксельное", font.clone()));
+        .add_button(create_default_size_radio_button("Пиксельное", font.clone()));
 
     let _font_true_type_button =
         font_anti_aliasing_selector
             .borrow_mut()
-            .add_button(create_default_size_check_button(
+            .add_button(create_default_size_radio_button(
                 "Субпиксельное (true type)",
                 font.clone(),
             ));
 
     font_anti_aliasing_selector
         .borrow_mut()
-        .set_index(match config.borrow().font_aa_mode {
+        .set_id(match config.borrow().font_aa_mode {
             FontAntiAliasingMode::NoAA => 0,
             FontAntiAliasingMode::AA => 1,
             FontAntiAliasingMode::TT => 2,
@@ -137,7 +141,7 @@ pub fn create_options_menu(
             }
             let new_aa_index = config.borrow().font_aa_mode;
             if new_aa_index != old_aa_index {
-                    GuiTest::rebuild_gui(config.clone(), context.clone(), OPTIONS_MENU_INDEX);
+                    GuiTest::rebuild_gui(editor.clone(), context.clone(), OPTIONS_MENU_INDEX);
 
             }
         }));
@@ -156,19 +160,19 @@ pub fn create_options_menu(
 
     let _no_line_anti_aliasing_button = line_anti_aliasing_selector
         .borrow_mut()
-        .add_button(create_default_size_check_button("Нету", font.clone()));
+        .add_button(create_default_size_radio_button("Нету", font.clone()));
 
     let _x2_line_anti_aliasing_button = line_anti_aliasing_selector
         .borrow_mut()
-        .add_button(create_default_size_check_button("Среднее", font.clone()));
+        .add_button(create_default_size_radio_button("Среднее", font.clone()));
 
     let _x4_line_anti_aliasing_button = line_anti_aliasing_selector
         .borrow_mut()
-        .add_button(create_default_size_check_button("Высшее", font.clone()));
+        .add_button(create_default_size_radio_button("Высшее", font.clone()));
 
     line_anti_aliasing_selector
         .borrow_mut()
-        .set_index(match config.borrow().curves_aa_mode {
+        .set_id(match config.borrow().curves_aa_mode {
             CurvesAAMode::NoAntiAliasing => 0,
             CurvesAAMode::AntiAliasingX2 => 1,
             CurvesAAMode::AntiAliasingX4 => 2,
@@ -193,42 +197,21 @@ pub fn create_options_menu(
         Some(create_default_size_text_box("Цветовая тема:", font.clone())),
     ));
 
-    let dark_theme_hotkey = Hotkey::ctrl(Key::D);
-    let _dark_theme_button =
-        theme_selector
-            .borrow_mut()
-            .add_button(create_default_size_check_button_with_hotkey(
-                "Тёмная",
-                dark_theme_hotkey,
-                false,
-                font.clone(),
-            ));
+    let _dark_theme_button = theme_selector
+        .borrow_mut()
+        .add_button(create_default_size_radio_button("Тёмная", font.clone()));
 
-    let beige_theme_hotkey = Hotkey::new(Key::B);
-    let _beige_theme_button =
-        theme_selector
-            .borrow_mut()
-            .add_button(create_default_size_check_button_with_hotkey(
-                "Бежевая",
-                beige_theme_hotkey,
-                false,
-                font.clone(),
-            ));
+    let _beige_theme_button = theme_selector
+        .borrow_mut()
+        .add_button(create_default_size_radio_button("Бежевая", font.clone()));
 
-    let light_theme_hotkey = Hotkey::shift(Key::L);
-    let _light_theme_button =
-        theme_selector
-            .borrow_mut()
-            .add_button(create_default_size_check_button_with_hotkey(
-                "Светлая",
-                light_theme_hotkey,
-                true,
-                font.clone(),
-            ));
+    let _light_theme_button = theme_selector
+        .borrow_mut()
+        .add_button(create_default_size_radio_button("Светлая", font.clone()));
 
     theme_selector
         .borrow_mut()
-        .set_index(match config.borrow().color_theme {
+        .set_id(match config.borrow().color_theme {
             ColorTheme::Dark => 0,
             ColorTheme::Beige => 1,
             ColorTheme::Light => 2,
@@ -243,11 +226,11 @@ pub fn create_options_menu(
                     _ => {}
                 }
 
-                    context
-                        .borrow_mut()
-                        .gui_system
-                        .set_color_theme(*crate::get_gui_color_theme(&config.borrow()));
-                }
+                context
+                    .borrow_mut()
+                    .gui_system
+                    .set_color_theme(*get_gui_color_theme(&config.borrow()));
+            }
         ));
 
     options_menu

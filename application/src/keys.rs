@@ -239,6 +239,15 @@ impl Hotkey {
         }
     }
 
+    pub fn ctrl_shift(key: Key) -> Self {
+        Self {
+            key,
+            ctrl: true,
+            alt: false,
+            shift: true,
+        }
+    }
+
     pub fn no_modifiers(&self) -> bool {
         !(self.ctrl || self.alt || self.shift)
     }

@@ -255,7 +255,7 @@ fn wparam_to_key(code: WPARAM) -> Option<Key> {
 }
 
 fn adjust_window_size(context: Rc<RefCell<Context>>, hwnd: HWND) -> APIResult<()> {
-    let minimal_size = context.borrow().gui_system.get_minimal_size();
+    let minimal_size = context.borrow().gui_system.get_minimal_size_of_system();
     let client_rect = get_client_rect(hwnd)?;
     if client_rect.right - client_rect.left >= minimal_size.0
         && client_rect.bottom - client_rect.top >= minimal_size.1
@@ -268,8 +268,8 @@ fn adjust_window_size(context: Rc<RefCell<Context>>, hwnd: HWND) -> APIResult<()
     let mut window_rect = get_window_rect(hwnd)?;
     window_rect.left -= dx / 2;
     window_rect.top -= dy / 2;
-    window_rect.right += dx / 2;
-    window_rect.bottom += dy / 2;
+    window_rect.right += (dx + 1) / 2;
+    window_rect.bottom += (dy + 1) / 2;
     adjust_rect(get_window_move_bounds(hwnd)?, &mut window_rect);
 
     unsafe {
@@ -292,8 +292,10 @@ fn run_jobs(context: Rc<RefCell<Context>>, hwnd: HWND) -> APIResult<()> {
         // attempt to recursion, wait for jobs
     } else {
         let job_system = context.borrow_mut().job_system.clone();
-        job_system.run_all(); // jobs can borrow context
-        adjust_window_size(context, hwnd)?;
+        if job_system.run_all() {
+            // jobs can borrow context
+            adjust_window_size(context, hwnd)?;
+        }
     }
     Ok(())
 }
@@ -450,7 +452,7 @@ unsafe fn maybe_window_proc(
             let window_rect = get_window_rect(hwnd)?;
 
             let (_, _, context) = get_context()?;
-            let minimal_size = context.borrow().gui_system.get_minimal_size();
+            let minimal_size = context.borrow().gui_system.get_minimal_size_of_system();
             // Count size of bevel...
             let minimal_size_x = minimal_size.0 as i32 + (window_rect.right - window_rect.left)
                 - (client_rect.right - client_rect.left);

@@ -12,6 +12,20 @@ pub fn create_default_size_button(text: &str, font: Font) -> Button {
     )
 }
 
+pub fn create_default_size_button_with_hotkey(
+    text: &str,
+    font: Font,
+    hotkey: Hotkey,
+    global: bool,
+) -> Button {
+    Button::new(
+        Button::default_size(text, Some(hotkey), &font),
+        text.to_string(),
+        font,
+    )
+    .hotkey(hotkey, global)
+}
+
 pub fn create_default_size_check_button(text: &str, font: Font) -> Button {
     Button::new(
         Button::default_checkbox_size(text, None, &font),
@@ -20,18 +34,12 @@ pub fn create_default_size_check_button(text: &str, font: Font) -> Button {
     )
 }
 
-pub fn create_default_size_check_button_with_hotkey(
-    text: &str,
-    hotkey: Hotkey,
-    global: bool,
-    font: Font,
-) -> Button {
+pub fn create_default_size_radio_button(text: &str, font: Font) -> Button {
     Button::new(
-        Button::default_checkbox_size(text, Some(hotkey), &font),
+        Button::default_radiobutton_size(text, None, &font),
         text.to_string(),
         font,
     )
-    .hotkey(hotkey, global)
 }
 
 pub fn create_default_size_edit(text: &str, font: Font, clipboard: Clipboard) -> Edit {

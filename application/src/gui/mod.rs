@@ -68,6 +68,7 @@ impl std::fmt::Debug for HotkeyCallback {
 pub struct GuiControlBase {
     pub(crate) size_constraints: SizeConstraints,
     pub(crate) current_size_constraints: SizeConstraints,
+    pub(crate) minimal_size: Position,
     pub(crate) self_ref: Option<Weak<RefCell<dyn GuiControl>>>,
     pub visible: bool,
     pub(crate) need_redraw: bool,
@@ -82,6 +83,7 @@ impl GuiControlBase {
         let result = Self {
             size_constraints,
             current_size_constraints: size_constraints,
+            minimal_size: (size_constraints.0.absolute, size_constraints.1.absolute),
             self_ref: None,
             visible: true,
             need_redraw: false,
@@ -100,14 +102,16 @@ impl GuiControlBase {
         result
     }
 
-    pub fn erase_background(buffer: &mut ImageViewMut<u32>, theme: &GuiColorTheme) {
-        buffer.fill(|p| *p = theme.background);
+    pub fn set_size_constaints(&mut self, constraints: SizeConstraints) {
+        self.size_constraints = constraints;
+        self.current_size_constraints = constraints;
+        self.minimal_size = (constraints.0.absolute, constraints.1.absolute);
     }
 }
 
 pub enum GuiMessage<'i, 'j> {
     Draw(&'i mut ImageViewMut<'j, u32>, &'i GuiColorTheme, bool),
-    UpdateSizeConstraints(&'i mut SizeConstraints),
+    UpdateSizeConstraints,
     FindDestination(&'i mut Rc<RefCell<dyn GuiControl>>, Position),
     RectUpdated,
     FocusLose(JobSystem),
@@ -139,39 +143,33 @@ pub(crate) fn avg_color(color1: u32, color2: u32) -> u32 {
 pub struct GuiColorTheme {
     pub background: u32,
     pub font: u32,
-    pub hotkey: u32,
     pub splitter: u32,
     pub highlight: u32,
     pub pressed: u32,
     pub selected: u32,
     pub inactive: u32,
-    pub edit_highlight: u32,
     pub edit_focused: u32,
 }
 
 pub static DARK_THEME: GuiColorTheme = GuiColorTheme {
     background: 0x000000,
     font: 0xCCCCCC,
-    hotkey: 0xAACCAA,
     splitter: 0xAACCAA,
-    highlight: 0xAAAAAA,
+    highlight: 0x9999CC,
     pressed: 0xFFFFFF,
     selected: 0x66CC66,
-    inactive: 0x444444,
-    edit_highlight: 0x666666,
-    edit_focused: 0x888888,
+    inactive: 0x555555,
+    edit_focused: 0x999999,
 };
 
 pub static LIGHT_THEME: GuiColorTheme = GuiColorTheme {
     background: 0xFFFFFF,
     font: 0x000000,
-    hotkey: 0x664422,
     splitter: 0x664422,
-    highlight: 0x666666,
+    highlight: 0x779966,
     pressed: 0x222222,
     selected: 0xCC8844,
     inactive: 0xAAAAAA,
-    edit_highlight: 0xCCCCCC,
     edit_focused: 0xEEEEEE,
 };
 
@@ -231,6 +229,13 @@ macro_rules! set_property {
     };
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum EmptySpaceState {
+    Empty,
+    Inactive,
+    Splitter,
+}
+
 impl GuiSystem {
     pub fn new(job_system: JobSystem) -> Self {
         Self {
@@ -267,12 +272,6 @@ impl GuiSystem {
             .borrow_mut()
             .on_message(GuiMessage::FindDestination(&mut result, position));
         result
-    }
-
-    pub fn get_size_constraints(control: &mut dyn GuiControl) -> SizeConstraints {
-        let mut size_constraints = control.get_base_mut().size_constraints;
-        control.on_message(GuiMessage::UpdateSizeConstraints(&mut size_constraints));
-        size_constraints
     }
 
     fn get_focus(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
@@ -330,15 +329,32 @@ impl GuiSystem {
         self.color_theme = color_theme;
     }
 
+    pub fn get_color(state: EmptySpaceState, color_theme: &GuiColorTheme) -> u32 {
+        match state {
+            EmptySpaceState::Empty => color_theme.background,
+            EmptySpaceState::Inactive => color_theme.inactive,
+            EmptySpaceState::Splitter => color_theme.splitter,
+        }
+    }
+
+    pub fn erase_background(
+        buffer: &mut ImageViewMut<u32>,
+        empty_space_state: EmptySpaceState,
+        theme: &GuiColorTheme,
+    ) {
+        let color = GuiSystem::get_color(empty_space_state, theme);
+        buffer.fill(|p| *p = color);
+    }
+
     pub fn on_resize(&mut self) {
         self.updated = false;
     }
 
-    pub fn get_minimal_size(&self) -> Position {
+    pub fn get_minimal_size_of_system(&self) -> Position {
         if let Some(root) = &self.root {
             let mut root = root.borrow_mut();
-            let size_constraints = Self::get_size_constraints(root.deref_mut());
-            (size_constraints.0.absolute, size_constraints.1.absolute)
+            root.on_message(GuiMessage::UpdateSizeConstraints);
+            root.get_base_mut().minimal_size
         } else {
             (0, 0)
         }

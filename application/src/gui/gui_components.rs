@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::{max, min};
-use std::ops::{Deref, DerefMut};
+use std::ops::DerefMut;
 use std::rc::Rc;
 
 use crate::callback;
@@ -22,6 +22,7 @@ pub struct Container {
     base: GuiControlBase,
     layout: ContainerLayout,
     children: Vec<Rc<RefCell<dyn GuiControl>>>,
+    empty_space_state: EmptySpaceState,
     support_compression: bool,
 }
 
@@ -31,6 +32,7 @@ impl Container {
             base: GuiControlBase::new(size_constraints),
             layout,
             children: Default::default(),
+            empty_space_state: EmptySpaceState::Empty,
             support_compression: false,
         }
     }
@@ -40,22 +42,36 @@ impl Container {
         self
     }
 
-    pub fn add_child<Control: GuiControl>(&mut self, control: Control) -> Rc<RefCell<Control>> {
+    pub fn empty_space_state(mut self, empty_space_state: EmptySpaceState) -> Self {
+        self.empty_space_state = empty_space_state;
+        self
+    }
+
+    pub fn child_count(&self) -> usize {
+        self.children.len()
+    }
+
+    pub fn insert_child<Control: GuiControl>(
+        &mut self,
+        index: usize,
+        control: Control,
+    ) -> Rc<RefCell<Control>> {
         let (untyped, typed) = GuiSystem::create_rc_by_control(control);
         untyped.borrow_mut().on_message(GuiMessage::Create);
         if self.base.visible {
             untyped.borrow_mut().on_message(GuiMessage::Show);
         }
-        self.children.push(untyped);
+        self.children.insert(index, untyped);
         typed
     }
 
-    pub fn delete_child(&mut self, control: &Rc<RefCell<dyn GuiControl>>) {
-        let control_base = control.borrow_mut().get_base_mut() as *const _;
-        self.children.retain(|child| {
-            let child = child.borrow_mut().get_base_mut() as *const _;
-            control_base != child
-        });
+    pub fn add_child<Control: GuiControl>(&mut self, control: Control) -> Rc<RefCell<Control>> {
+        let index = self.child_count();
+        self.insert_child(index, control)
+    }
+
+    pub fn delete_child(&mut self, index: usize) {
+        self.children.remove(index);
     }
 }
 
@@ -125,7 +141,7 @@ macro_rules! fill_empty_space {
                 position_to_image_size($self.base.rect.relative(fill_rect.left_top)),
                 position_to_image_size($self.base.rect.relative(fill_rect.right_bottom)),
             );
-            GuiControlBase::erase_background(&mut buf_for_fill, $theme);
+            GuiSystem::erase_background(&mut buf_for_fill, $self.empty_space_state, $theme);
         }
 
         let mut fill_rect = $self.base.rect;
@@ -134,7 +150,7 @@ macro_rules! fill_empty_space {
             position_to_image_size($self.base.rect.relative(fill_rect.left_top)),
             position_to_image_size($self.base.rect.relative(fill_rect.right_bottom)),
         );
-        GuiControlBase::erase_background(&mut buf_for_fill, $theme);
+        GuiSystem::erase_background(&mut buf_for_fill, $self.empty_space_state, $theme);
     };
 }
 
@@ -156,38 +172,72 @@ impl GuiControl for Container {
 
                 return true;
             }
-            GuiMessage::UpdateSizeConstraints(size_constraints) => {
-                if self.support_compression {
-                    return true;
+            GuiMessage::UpdateSizeConstraints => {
+                for child in &self.children {
+                    child
+                        .borrow_mut()
+                        .on_message(GuiMessage::UpdateSizeConstraints);
                 }
 
                 let child_real_constraints: Vec<_> = self
                     .children
                     .iter_mut()
-                    .map(|c| GuiSystem::get_size_constraints(c.borrow_mut().deref_mut()))
+                    .map(|c| c.borrow_mut().get_base_mut().current_size_constraints)
                     .collect();
 
-                let mut minimal_size: Position = (0, 0);
+                let child_minimal_sizes: Vec<_> = self
+                    .children
+                    .iter_mut()
+                    .map(|c| c.borrow_mut().get_base_mut().minimal_size)
+                    .collect();
+
+                let mut abs_constraints: Position = (0, 0);
+                let minimal_size = &mut self.base.minimal_size;
+                *minimal_size = (0, 0);
                 match self.layout {
                     ContainerLayout::Vertical => {
                         for child_real_constraints in &child_real_constraints {
-                            minimal_size.0 = max(minimal_size.0, child_real_constraints.0.absolute);
-                            minimal_size.1 += child_real_constraints.1.absolute;
+                            abs_constraints.0 =
+                                max(abs_constraints.0, child_real_constraints.0.absolute);
+                            abs_constraints.1 += child_real_constraints.1.absolute;
+                        }
+                        for child_minimal_sizes in &child_minimal_sizes {
+                            minimal_size.0 = max(minimal_size.0, child_minimal_sizes.0);
+                            if !self.support_compression {
+                                minimal_size.1 += child_minimal_sizes.1;
+                            }
+                        }
+                        minimal_size.0 = max(minimal_size.0, self.base.size_constraints.0.absolute);
+                        if !self.support_compression {
+                            minimal_size.1 =
+                                max(minimal_size.1, self.base.size_constraints.1.absolute);
                         }
                     }
                     ContainerLayout::Horizontal => {
                         for child_real_constraints in &child_real_constraints {
-                            minimal_size.0 += child_real_constraints.0.absolute;
-                            minimal_size.1 = max(minimal_size.1, child_real_constraints.1.absolute);
+                            abs_constraints.0 += child_real_constraints.0.absolute;
+                            abs_constraints.1 =
+                                max(abs_constraints.1, child_real_constraints.1.absolute);
                         }
+                        for child_minimal_sizes in &child_minimal_sizes {
+                            if !self.support_compression {
+                                minimal_size.0 += child_minimal_sizes.0;
+                            }
+                            minimal_size.1 = max(minimal_size.1, child_minimal_sizes.1);
+                        }
+                        if !self.support_compression {
+                            minimal_size.0 =
+                                max(minimal_size.0, self.base.size_constraints.0.absolute);
+                        }
+                        minimal_size.1 = max(minimal_size.1, self.base.size_constraints.1.absolute);
                     }
                 }
 
                 self.base.current_size_constraints.0.absolute =
-                    max(self.base.size_constraints.0.absolute, minimal_size.0);
+                    max(self.base.size_constraints.0.absolute, abs_constraints.0);
                 self.base.current_size_constraints.1.absolute =
-                    max(self.base.size_constraints.1.absolute, minimal_size.1);
-                *size_constraints = self.base.current_size_constraints;
+                    max(self.base.size_constraints.1.absolute, abs_constraints.1);
+
                 return true;
             }
             GuiMessage::RectUpdated => {
@@ -271,46 +321,30 @@ impl GuiControl for Container {
 }
 
 #[derive(Debug)]
-pub struct ColorBox {
-    base: GuiControlBase,
-}
-
-impl ColorBox {
-    pub fn new(size_constraints: SizeConstraints) -> Self {
-        Self {
-            base: GuiControlBase::new(size_constraints),
-        }
-    }
-}
-
-impl GuiControl for ColorBox {
-    fn get_base_mut(&mut self) -> &mut GuiControlBase {
-        &mut self.base
-    }
-
-    fn on_message(&mut self, m: GuiMessage) -> bool {
-        match m {
-            GuiMessage::Draw(buf, theme, force) => {
-                if self.base.can_draw(force) {
-                    buf.fill(|d| *d = theme.splitter);
-                }
-
-                return true;
-            }
-            _ => return false,
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct EmptySpace {
     base: GuiControlBase,
+    state: EmptySpaceState,
 }
 
 impl EmptySpace {
-    pub fn new(size_constraints: SizeConstraints) -> Self {
+    pub fn new_empty(size_constraints: SizeConstraints) -> Self {
         Self {
             base: GuiControlBase::new(size_constraints),
+            state: EmptySpaceState::Empty,
+        }
+    }
+
+    pub fn new_inactive(size_constraints: SizeConstraints) -> Self {
+        Self {
+            base: GuiControlBase::new(size_constraints),
+            state: EmptySpaceState::Inactive,
+        }
+    }
+
+    pub fn new_splitter(size_constraints: SizeConstraints) -> Self {
+        Self {
+            base: GuiControlBase::new(size_constraints),
+            state: EmptySpaceState::Splitter,
         }
     }
 }
@@ -324,8 +358,9 @@ impl GuiControl for EmptySpace {
         match m {
             GuiMessage::Draw(buf, theme, force) => {
                 if self.base.can_draw(force) {
-                    GuiControlBase::erase_background(buf, theme);
+                    GuiSystem::erase_background(buf, self.state, theme);
                 }
+
                 return true;
             }
             _ => return false,
@@ -347,7 +382,7 @@ enum ButtonCheckState {
     None,
     CheckBox(bool),
     RadioButton(bool),
-    GroupButton(bool),
+    TabButton(bool),
 }
 
 #[derive(Debug)]
@@ -423,8 +458,8 @@ impl Button {
         self
     }
 
-    pub fn group_button(self) -> Self {
-        *self.check_state.borrow_mut() = ButtonCheckState::GroupButton(false);
+    pub fn tab_button(self) -> Self {
+        *self.check_state.borrow_mut() = ButtonCheckState::TabButton(false);
         self
     }
 
@@ -439,7 +474,7 @@ impl Button {
             ButtonCheckState::None => false,
             ButtonCheckState::CheckBox(_) => true,
             ButtonCheckState::RadioButton(_) => true,
-            ButtonCheckState::GroupButton(_) => false,
+            ButtonCheckState::TabButton(_) => false,
         }
     }
 
@@ -448,7 +483,7 @@ impl Button {
             ButtonCheckState::None => false,
             ButtonCheckState::CheckBox(c) => c,
             ButtonCheckState::RadioButton(c) => c,
-            ButtonCheckState::GroupButton(c) => c,
+            ButtonCheckState::TabButton(c) => c,
         }
     }
 
@@ -457,7 +492,7 @@ impl Button {
             ButtonCheckState::None => {}
             ButtonCheckState::CheckBox(c) => *c = checked,
             ButtonCheckState::RadioButton(c) => *c = checked,
-            ButtonCheckState::GroupButton(c) => *c = checked,
+            ButtonCheckState::TabButton(c) => *c = checked,
         }
     }
 
@@ -466,7 +501,7 @@ impl Button {
             ButtonCheckState::None => "",
             ButtonCheckState::CheckBox(_) => "V",
             ButtonCheckState::RadioButton(_) => "●",
-            ButtonCheckState::GroupButton(_) => "",
+            ButtonCheckState::TabButton(_) => "",
         }
     }
 
@@ -491,15 +526,26 @@ impl Button {
                     "○"
                 }
             }
-            ButtonCheckState::GroupButton(_) => "",
+            ButtonCheckState::TabButton(_) => "",
         }
     }
 
     pub fn get_background_color(&self, theme: &GuiColorTheme) -> u32 {
-        let color = if self.checked() {
-            avg_color(theme.background, theme.selected)
-        } else {
-            theme.background
+        let color = match *self.check_state.borrow() {
+            ButtonCheckState::TabButton(checked) => {
+                if checked {
+                    theme.background
+                } else {
+                    theme.inactive
+                }
+            }
+            _ => {
+                if self.checked() {
+                    avg_color(theme.background, theme.selected)
+                } else {
+                    theme.background
+                }
+            }
         };
 
         if self.base.pressed {
@@ -569,7 +615,7 @@ impl GuiControl for Button {
 
                         let hotkey_size = self.font.get_size(&hotkey_text);
                         let hotkey_width = min(
-                            hotkey_size.0 + hotkey_size.1,
+                            hotkey_size.0 + hotkey_size.1 / 2,
                             buf.get_size().0 - check_width,
                         );
 
@@ -579,12 +625,44 @@ impl GuiControl for Button {
                             (buf.get_size().0 - hotkey_width, buf.get_size().1),
                         );
                         let with_checks = self.has_checks();
+                        let text_size = self.font.get_size(&self.text);
+                        let text_too_long = text_size.0 > caption_dst.get_size().0;
+                        let caption_text = if text_too_long {
+                            let get_longest_text =
+                                |input: &str, font: &Font, max_size: usize| -> String {
+                                    let dots = "...";
+                                    let mut good_text = String::new();
+                                    let mut suffix = "";
+                                    let mut size = font.get_size(dots).1 / 2;
+                                    let mut tmp = [0u8; 4];
+                                    for (index, c) in input.chars().enumerate() {
+                                        size += font.get_size(c.encode_utf8(&mut tmp)).0;
+                                        if size > max_size && index > 0 {
+                                            return good_text + suffix;
+                                        }
+                                        good_text.push(c);
+                                        if index == 0 {
+                                            size += font.get_size(dots).0;
+                                            if size > max_size {
+                                                return good_text;
+                                            }
+                                            suffix = dots;
+                                        }
+                                    }
+                                    return good_text + suffix;
+                                };
+
+                            get_longest_text(&self.text, &self.font, caption_dst.get_size().0)
+                        } else {
+                            self.text.clone()
+                        };
 
                         let mut caption_position = (
                             if with_checks {
                                 0
                             } else {
-                                (caption_dst.get_size().0 - check_width) as i32 / 2
+                                (caption_dst.get_size().0 - check_width + text_size.1 % 2) as i32
+                                    / 2
                             },
                             caption_dst.get_size().1 as i32 / 2,
                         );
@@ -598,20 +676,20 @@ impl GuiControl for Button {
                         } else {
                             self.font.layout_horizontal(TextLayoutHorizontal::MIDDLE)
                         };
-                        font.color(theme.font)
-                            .draw(&self.text, caption_position, &mut caption_dst);
+                        font.color(theme.font).draw(
+                            &caption_text,
+                            caption_position,
+                            &mut caption_dst,
+                        );
 
                         // Draw hotkey
                         let mut hotkey_text_dst =
                             buf.window_mut((buf.get_size().0 - hotkey_width, 0), buf.get_size());
-                        let hotkey_position = (
-                            hotkey_text_dst.get_size().0 as i32 / 2,
-                            hotkey_text_dst.get_size().1 as i32 / 2,
-                        );
+                        let hotkey_position = (0, hotkey_text_dst.get_size().1 as i32 / 2);
 
                         self.font
-                            .layout_horizontal(TextLayoutHorizontal::MIDDLE)
-                            .color(theme.hotkey)
+                            .layout_horizontal(TextLayoutHorizontal::LEFT)
+                            .color(theme.splitter)
                             .draw(&hotkey_text, hotkey_position, &mut hotkey_text_dst);
 
                         // Draw checkbox or radiobox
@@ -702,7 +780,7 @@ impl GuiControl for TextBox {
         match m {
             GuiMessage::Draw(buf, theme, force) => {
                 if self.base.can_draw(force) {
-                    GuiControlBase::erase_background(buf, theme);
+                    GuiSystem::erase_background(buf, EmptySpaceState::Empty, theme);
                     let size = buf.get_size();
                     if size.0 > 0 && size.1 > 0 {
                         let position = if self.padding {
@@ -874,9 +952,20 @@ impl GuiControl for Edit {
                             .fill(|p| *p = border_color);
                         let mut inner = buf.window_mut((1, 1), (x - 1, y - 1));
 
-                        if self.base.focus {
-                            inner.fill(|d| *d = avg_color(theme.background, theme.edit_focused));
+                        let color = if self.base.focus {
+                            avg_color(theme.background, theme.edit_focused)
+                        } else {
+                            avg_color(theme.background, theme.inactive)
+                        };
 
+                        let color = if self.base.highlight {
+                            avg_color(color, theme.highlight)
+                        } else {
+                            color
+                        };
+
+                        inner.fill(|d| *d = color);
+                        if self.base.focus {
                             let text_before_cursor: String = self.text
                                 [self.scroll_position as usize..self.cursor_position as usize]
                                 .iter()
@@ -887,10 +976,6 @@ impl GuiControl for Edit {
                                     .window_mut((cursor_position, 0), (cursor_position + 2, y - 2))
                                     .fill(|p| *p = border_color);
                             }
-                        } else if self.base.highlight {
-                            inner.fill(|d| *d = avg_color(theme.background, theme.edit_highlight));
-                        } else {
-                            inner.fill(|d| *d = avg_color(theme.background, theme.inactive));
                         }
 
                         let mut visible_text = String::new();
@@ -1333,35 +1418,74 @@ impl std::fmt::Debug for RadioGroupCallback {
 }
 
 #[derive(Debug)]
+struct RadioGroupInternal {
+    buttons: Vec<Weak<RefCell<Button>>>,
+    close_buttons: Vec<Weak<RefCell<Button>>>,
+    selected_id: usize,
+    callback: Option<RadioGroupCallback>,
+    selection_history: Vec<usize>,
+    ids: Vec<usize>,
+}
+
+#[derive(Debug)]
 pub struct RadioGroup {
     container: Container,
-    buttons: Rc<RefCell<Vec<Rc<RefCell<Button>>>>>,
-    selected_index: Rc<RefCell<usize>>,
-    callback: Rc<RefCell<Option<RadioGroupCallback>>>,
+    internal: Rc<RefCell<RadioGroupInternal>>,
+    tab: bool,
+    with_closes: bool,
+    last_id: usize,
 }
 
 impl RadioGroup {
+    fn new_as(
+        size_constraints: SizeConstraints,
+        layout: ContainerLayout,
+        caption: Option<TextBox>,
+        tab: bool,
+        with_closes: bool,
+    ) -> Self {
+        let mut container = Container::new(size_constraints, layout);
+        if tab {
+            container = container.empty_space_state(EmptySpaceState::Inactive);
+        }
+
+        caption.map(|caption| container.add_child(caption));
+
+        Self {
+            container,
+            internal: Rc::new(RefCell::new(RadioGroupInternal {
+                buttons: Vec::new(),
+                close_buttons: Vec::new(),
+                selected_id: 0,
+                callback: None,
+                selection_history: Vec::new(),
+                ids: Vec::new(),
+            })),
+            tab,
+            with_closes,
+            last_id: 0,
+        }
+    }
+
     pub fn new(
         size_constraints: SizeConstraints,
         layout: ContainerLayout,
         caption: Option<TextBox>,
     ) -> Self {
-        let mut container = Container::new(size_constraints, layout);
-        caption.map(|caption| container.add_child(caption));
-        Self {
-            container,
-            buttons: Rc::new(RefCell::new(Vec::new())),
-            selected_index: Rc::new(RefCell::new(0)),
-            callback: Rc::new(RefCell::new(None)),
-        }
+        Self::new_as(size_constraints, layout, caption, false, false)
     }
 
-    pub fn get_index(&self) -> usize {
-        *self.selected_index.borrow()
+    pub fn compressed(mut self) -> Self {
+        self.container = self.container.compressed();
+        self
+    }
+
+    pub fn get_id(&self) -> usize {
+        self.internal.borrow().selected_id
     }
 
     pub fn set_callback(&mut self, callback: impl Fn(usize) + 'static) {
-        *self.callback.borrow_mut() = Some(RadioGroupCallback(Rc::new(callback)));
+        self.internal.borrow_mut().callback = Some(RadioGroupCallback(Rc::new(callback)));
     }
 
     pub fn callback(mut self, callback: impl Fn(usize) + 'static) -> Self {
@@ -1369,57 +1493,173 @@ impl RadioGroup {
         self
     }
 
-    fn change_index_by(
-        buttons: &Weak<RefCell<Vec<Rc<RefCell<Button>>>>>,
-        selected_index: &Weak<RefCell<usize>>,
-        callback: &Rc<RefCell<Option<RadioGroupCallback>>>,
-        new_index: usize,
+    fn find_index_by(ids: &[usize], id: usize) -> Option<usize> {
+        ids.iter().position(|&element| element == id)
+    }
+
+    fn find_index(&self, id: usize) -> Option<usize> {
+        Self::find_index_by(&self.internal.borrow().ids, id)
+    }
+
+    fn get_last_id(&self) -> usize {
+        self.last_id
+    }
+
+    fn change_id_by(radio_group_internal: &mut RadioGroupInternal, new_id: usize) {
+        let buttons = &mut radio_group_internal.buttons;
+        let close_buttons = &mut radio_group_internal.close_buttons;
+        let set_state = |b: &Weak<RefCell<Button>>, state: bool| {
+            b.upgrade().map(|b| b.borrow_mut().set_checked(state));
+        };
+
+        if let Some(selection_position) = radio_group_internal
+            .selection_history
+            .iter()
+            .position(|&id| id == new_id)
+        {
+            radio_group_internal
+                .selection_history
+                .remove(selection_position);
+        }
+
+        if let Some(old_index) =
+            Self::find_index_by(&radio_group_internal.ids, radio_group_internal.selected_id)
+        {
+            buttons.get(old_index).map(|b| set_state(b, false));
+            close_buttons.get(old_index).map(|b| set_state(b, false));
+        }
+
+        if let Some(new_index) = Self::find_index_by(&radio_group_internal.ids, new_id) {
+            radio_group_internal.selected_id = new_id;
+            radio_group_internal.selection_history.push(new_id);
+            buttons.get(new_index).map(|b| set_state(b, true));
+            close_buttons.get(new_index).map(|b| set_state(b, true));
+            if let Some(RadioGroupCallback(callback)) = &radio_group_internal.callback {
+                callback(new_id);
+            }
+        }
+    }
+
+    pub fn set_id(&self, new_id: usize) {
+        Self::change_id_by(self.internal.borrow_mut().deref_mut(), new_id);
+    }
+
+    fn add_button_with_close_callback(
+        &mut self,
+        button: Button,
+        close_callback: impl Fn() + 'static,
     ) {
-        buttons.upgrade().map(|v| {
-            selected_index.upgrade().map(|i| {
-                v.borrow_mut().get(*i.borrow()).map(|b| {
-                    b.borrow_mut().set_checked(false);
-                });
-
-                *i.borrow_mut() = new_index;
-                v.borrow_mut().get(*i.borrow()).map(|b| {
-                    b.borrow_mut().set_checked(true);
-                });
-
-                if let Some(RadioGroupCallback(callback)) = callback.borrow().deref() {
-                    callback(new_index);
-                }
-            });
-        });
-    }
-
-    pub fn set_index(&self, new_index: usize) {
-        Self::change_index_by(
-            &Rc::downgrade(&self.buttons),
-            &Rc::downgrade(&self.selected_index),
-            &self.callback,
-            new_index,
-        );
-    }
-
-    fn add_button_as(&mut self, button: Button, group: bool) {
-        let index_capture = Rc::downgrade(&self.selected_index);
-        let buttons_capture = Rc::downgrade(&self.buttons);
-        let index = self.buttons.borrow().len();
-        let callback_capture = self.callback.clone();
-        let button = if group {
-            button.group_button()
+        let last_id = self.last_id;
+        let mut button = if self.tab {
+            button.tab_button()
         } else {
             button.radio_button()
         };
-        let new_button = self.container.add_child(button.callback(move || {
-            Self::change_index_by(&buttons_capture, &index_capture, &callback_capture, index);
-        }));
-        self.buttons.borrow_mut().push(new_button.clone());
+
+        let button_font = button.font.clone();
+        let close_text = "x";
+        let close_text_size = button_font.get_size(close_text);
+        let close_button_size = (close_text_size.0 as i32 * 2, close_text_size.1 as i32 + 2);
+        let mut holder_constraints = button.base.size_constraints;
+        if self.with_closes {
+            holder_constraints.0.absolute += close_button_size.0;
+        }
+
+        let new_button_holder = self.container.add_child(Container::new(
+            holder_constraints,
+            ContainerLayout::Horizontal,
+        ));
+
+        button.base.set_size_constaints(SizeConstraints(
+            SizeConstraint::flexible(0),
+            SizeConstraint::flexible(0),
+        ));
+
+        let internal = self.internal.clone();
+        let new_button =
+            new_button_holder
+                .borrow_mut()
+                .add_child(button.callback(callback!( [internal] () {
+                    Self::change_id_by(
+                        internal.borrow_mut().deref_mut(),
+                        last_id,
+                    );
+                })));
+
+        let first;
+        {
+            let mut internal = self.internal.borrow_mut();
+            internal.buttons.push(Rc::downgrade(&new_button));
+            if self.with_closes {
+                let close_button_holder = new_button_holder.borrow_mut().add_child(
+                    Container::new(
+                        SizeConstraints(
+                            SizeConstraint::fixed(close_button_size.0 as i32),
+                            SizeConstraint::fixed(close_button_size.1 as i32),
+                        ),
+                        ContainerLayout::Vertical,
+                    )
+                    .empty_space_state(EmptySpaceState::Inactive),
+                );
+
+                let button = close_button_holder.borrow_mut().add_child(
+                    Button::new(
+                        SizeConstraints(
+                            SizeConstraint::flexible(0),
+                            SizeConstraint::fixed(holder_constraints.1.absolute * 75 / 100),
+                        ),
+                        close_text.to_string(),
+                        button_font,
+                    )
+                    .tab_button(),
+                );
+
+                button.borrow_mut().set_callback(close_callback);
+                internal.close_buttons.push(Rc::downgrade(&button));
+            }
+            first = internal.ids.is_empty();
+            internal.ids.push(last_id);
+        }
+        if first {
+            self.set_id(self.last_id);
+        }
+        self.last_id += 1;
     }
 
     pub fn add_button(&mut self, button: Button) {
-        self.add_button_as(button, false)
+        self.add_button_with_close_callback(button, || {});
+    }
+
+    pub fn delete_button(&mut self, id: usize) {
+        if let Some(index) = self.find_index(id) {
+            self.container.delete_child(index);
+            let prev_id;
+            {
+                let mut internal = self.internal.borrow_mut();
+                if index < internal.buttons.len() {
+                    internal.buttons.remove(index);
+                }
+                if index < internal.close_buttons.len() {
+                    internal.close_buttons.remove(index);
+                }
+                if index < internal.ids.len() {
+                    internal.ids.remove(index);
+                }
+                if Some(id) == internal.selection_history.last().map(|id| *id) {
+                    internal.selection_history.pop();
+                    prev_id = internal
+                        .selection_history
+                        .last()
+                        .or_else(|| internal.ids.get(0))
+                        .cloned();
+                } else {
+                    prev_id = None;
+                }
+            }
+            if let Some(prev_id) = prev_id {
+                self.set_id(prev_id);
+            }
+        }
     }
 }
 
@@ -1443,28 +1683,39 @@ pub struct TabControl {
 }
 
 impl TabControl {
-    pub fn new(height: i32, font: Font) -> Self {
+    pub fn new(height: i32, font: Font, with_closes: bool) -> Self {
         let header_constrains =
             SizeConstraints(SizeConstraint::flexible(0), SizeConstraint::fixed(height));
-        let full_constrains = SizeConstraints(
-            SizeConstraint::flexible(0),
-            SizeConstraint::fixed(height + 1),
-        );
+        let full_constrains =
+            SizeConstraints(SizeConstraint::flexible(0), SizeConstraint::fixed(height));
         Self {
             base: GuiControlBase::new(full_constrains),
             height,
-            header: RadioGroup::new(header_constrains, ContainerLayout::Horizontal, None),
+            header: RadioGroup::new_as(
+                header_constrains,
+                ContainerLayout::Horizontal,
+                None,
+                true,
+                with_closes,
+            ),
             children: vec![],
             font,
         }
     }
 
-    pub fn add_tab<Control: GuiControl>(
+    pub fn compressed(mut self) -> Self {
+        self.header = self.header.compressed();
+        self
+    }
+
+    pub fn add_tab_with_id<Control: GuiControl>(
         &mut self,
         caption: String,
         width: i32,
         control: Control,
-    ) -> Rc<RefCell<Control>> {
+        close_callback: impl Fn(usize) + 'static,
+    ) -> (Rc<RefCell<Control>>, usize) {
+        let tab_id = self.header.get_last_id();
         let (untyped, typed) = GuiSystem::create_rc_by_control(control);
         let button = Button::new(
             SizeConstraints(
@@ -1475,9 +1726,21 @@ impl TabControl {
             self.font.clone(),
         );
 
-        self.header.add_button_as(button, true);
+        self.header
+            .add_button_with_close_callback(button, move || close_callback(tab_id));
+
         self.children.push(untyped);
-        typed
+        (typed, tab_id)
+    }
+
+    pub fn add_tab<Control: GuiControl>(
+        &mut self,
+        caption: String,
+        width: i32,
+        control: Control,
+    ) -> Rc<RefCell<Control>> {
+        self.add_tab_with_id(caption, width, control, |_: usize| {})
+            .0
     }
 
     fn hide_selected_tab(&self) {
@@ -1496,19 +1759,27 @@ impl TabControl {
         }
     }
 
-    pub fn selected_tab_index(&self) -> usize {
-        self.header.get_index()
+    pub fn delete_tab(&mut self, id: usize) {
+        if let Some(index) = self.header.find_index(id) {
+            self.children.remove(index);
+            self.header.delete_button(id);
+        }
+    }
+
+    pub fn selected_tab_id(&self) -> usize {
+        self.header.get_id()
     }
 
     pub fn get_selected_tab(&self) -> Option<Rc<RefCell<dyn GuiControl>>> {
-        self.children
-            .get(self.selected_tab_index())
-            .map(|t| t.clone())
+        self.header
+            .find_index(self.selected_tab_id())
+            .and_then(|index| self.children.get(index))
+            .map(Rc::clone)
     }
 
-    pub fn select_tab(&mut self, index: usize) {
+    pub fn select_tab(&mut self, id: usize) {
         self.hide_selected_tab();
-        self.header.set_index(index);
+        self.header.set_id(id);
         self.show_selected_tab();
     }
 }
@@ -1537,33 +1808,41 @@ impl GuiControl for TabControl {
                     .header
                     .on_message(GuiMessage::FindDestination(dest, position));
             }
-            GuiMessage::UpdateSizeConstraints(size_constraints) => {
+            GuiMessage::UpdateSizeConstraints => {
+                self.header.on_message(GuiMessage::UpdateSizeConstraints);
                 self.base.current_size_constraints =
-                    GuiSystem::get_size_constraints(&mut self.header);
-
+                    self.header.get_base_mut().current_size_constraints;
+                self.base.minimal_size = self.header.get_base_mut().minimal_size;
                 if let Some(selected_tab) = self.get_selected_tab() {
-                    let tab_size_constraints =
-                        GuiSystem::get_size_constraints(selected_tab.borrow_mut().deref_mut());
+                    selected_tab
+                        .borrow_mut()
+                        .on_message(GuiMessage::UpdateSizeConstraints);
+                    let tab_size_constraints = selected_tab
+                        .borrow_mut()
+                        .get_base_mut()
+                        .current_size_constraints;
                     self.base.current_size_constraints.0.absolute = max(
                         self.base.current_size_constraints.0.absolute,
                         tab_size_constraints.0.absolute,
                     );
                     self.base.current_size_constraints.1.absolute +=
-                        tab_size_constraints.1.absolute + 1;
-                } else {
-                    self.base.current_size_constraints.1.absolute += 1;
+                        tab_size_constraints.1.absolute;
+                    self.base.current_size_constraints.1.relative = tab_size_constraints.1.relative;
+
+                    let tab_minimal_size = selected_tab.borrow_mut().get_base_mut().minimal_size;
+                    self.base.minimal_size.0 = max(self.base.minimal_size.0, tab_minimal_size.0);
+                    self.base.minimal_size.1 += tab_minimal_size.1;
                 }
 
-                *size_constraints = self.base.current_size_constraints;
                 return true;
             }
             GuiMessage::RectUpdated => {
                 let mut header_rect = self.base.rect;
-                header_rect.right_bottom.1 = self.height;
+                header_rect.right_bottom.1 = header_rect.left_top.1 + self.height;
                 GuiSystem::set_rect(&mut self.header, header_rect);
                 if let Some(selected_tab) = self.get_selected_tab() {
                     let mut selected_tab_rect = self.base.rect;
-                    selected_tab_rect.left_top.1 = self.height + 1;
+                    selected_tab_rect.left_top.1 = self.base.rect.left_top.1 + self.height;
                     GuiSystem::set_rect(selected_tab.borrow_mut().deref_mut(), selected_tab_rect);
                 }
                 return true;
@@ -1571,14 +1850,6 @@ impl GuiControl for TabControl {
             GuiMessage::Draw(buf, theme, force) => {
                 if self.base.visible {
                     let need_force = self.base.can_draw(force);
-                    let has_button_updates = if let Some(button) =
-                        self.header.buttons.borrow().get(self.selected_tab_index())
-                    {
-                        button.borrow().base.need_redraw
-                    } else {
-                        false
-                    };
-
                     self.header
                         .on_message(GuiMessage::Draw(buf, theme, need_force));
                     if let Some(selected_tab) = self.get_selected_tab() {
@@ -1589,38 +1860,6 @@ impl GuiControl for TabControl {
                             position_to_image_size(self.base.rect.relative(rect.right_bottom)),
                         );
                         child.on_message(GuiMessage::Draw(&mut buf_for_child, theme, need_force));
-                    }
-                    if (need_force || has_button_updates) && self.height < buf.get_size().1 as i32 {
-                        if let Some(button) =
-                            self.header.buttons.borrow().get(self.selected_tab_index())
-                        {
-                            let button = button.borrow_mut();
-                            let button_background_color = button.get_background_color(theme);
-                            let button_rect = button.base.rect;
-                            let x1 = button_rect.left_top.0 - self.base.rect.left_top.0;
-                            let x2 = button_rect.right_bottom.0 - self.base.rect.left_top.0;
-                            if x1 >= 0 && x1 <= x2 && x2 <= buf.get_size().0 as i32 {
-                                let mut buf_for_fill = buf.window_mut(
-                                    position_to_image_size((x1, self.height)),
-                                    position_to_image_size((x2, self.height + 1)),
-                                );
-                                buf_for_fill.fill(|p| *p = button_background_color);
-
-                                let mut buf_for_fill = buf.window_mut(
-                                    position_to_image_size((0, self.height)),
-                                    position_to_image_size((x1, self.height + 1)),
-                                );
-                                buf_for_fill.fill(|p| *p = theme.splitter);
-                                let mut buf_for_fill = buf.window_mut(
-                                    position_to_image_size((x2, self.height)),
-                                    position_to_image_size((
-                                        buf.get_size().0 as i32,
-                                        self.height + 1,
-                                    )),
-                                );
-                                buf_for_fill.fill(|p| *p = theme.splitter);
-                            }
-                        }
                     }
                 }
 
@@ -1635,7 +1874,7 @@ impl GuiControl for TabControl {
                     let active = active
                         && self.base.visible
                         && child.borrow_mut().get_base_mut().visible
-                        && index == self.selected_tab_index();
+                        && index == self.selected_tab_id();
                     child
                         .borrow_mut()
                         .on_message(GuiMessage::GetHotkeys(hotkey_map, active));

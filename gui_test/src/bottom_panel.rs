@@ -36,7 +36,7 @@ pub fn create_bottom_panel(
 
     let _hr = bottom_panel
         .borrow_mut()
-        .add_child(ColorBox::new(SizeConstraints(
+        .add_child(EmptySpace::new_splitter(SizeConstraints(
             SizeConstraint::fixed(1),
             SizeConstraint::flexible(0),
         )));
@@ -55,7 +55,7 @@ pub fn create_bottom_panel(
 
     let _es = bottom_panel
         .borrow_mut()
-        .add_child(EmptySpace::new(SizeConstraints(
+        .add_child(EmptySpace::new_empty(SizeConstraints(
             SizeConstraint::fixed(font_symbol_size.0 as i32 / 2),
             SizeConstraint::flexible(0),
         )));
@@ -70,7 +70,7 @@ pub fn create_bottom_panel(
 
     let _es = bottom_panel
         .borrow_mut()
-        .add_child(EmptySpace::new(SizeConstraints(
+        .add_child(EmptySpace::new_empty(SizeConstraints(
             SizeConstraint::fixed(font_symbol_size.0 as i32 / 2),
             SizeConstraint::flexible(0),
         )));
@@ -85,7 +85,7 @@ pub fn create_bottom_panel(
     );
     let _es = bottom_panel
         .borrow_mut()
-        .add_child(EmptySpace::new(SizeConstraints(
+        .add_child(EmptySpace::new_empty(SizeConstraints(
             SizeConstraint::fixed(font_symbol_size.0 as i32 / 2),
             SizeConstraint::flexible(0),
         )));

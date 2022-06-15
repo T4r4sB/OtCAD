@@ -13,7 +13,9 @@ pub fn create_transform_menu(parent: &mut TabControl, font: &Font) -> Rc<RefCell
     let menu_caption = "Преобразовать";
     let transform_menu = parent.add_tab(
         menu_caption.to_string(),
-        font.get_size(menu_caption).0 as i32 + font_height,
+        GuiSystem::default_size(&menu_caption, None, &font)
+            .0
+            .absolute,
         Container::new(
             SizeConstraints(
                 SizeConstraint::flexible(0),

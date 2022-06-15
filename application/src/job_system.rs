@@ -17,10 +17,12 @@ impl JobSystem {
         self.jobs.borrow_mut().push(callback);
     }
 
-    pub fn run_all(&self) {
+    pub fn run_all(&self) -> bool {
+        let result = !self.jobs.borrow().is_empty();
         for callback in self.jobs.borrow().iter() {
             callback();
         }
         self.jobs.borrow_mut().clear();
+        result
     }
 }

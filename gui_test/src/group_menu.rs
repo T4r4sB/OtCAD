@@ -12,7 +12,9 @@ pub fn create_group_menu(parent: &mut TabControl, font: &Font) -> Rc<RefCell<Con
     let menu_caption = "Группы";
     let group_menu = parent.add_tab(
         menu_caption.to_string(),
-        font.get_size(menu_caption).0 as i32 + font_height,
+        GuiSystem::default_size(&menu_caption, None, &font)
+            .0
+            .absolute,
         Container::new(
             SizeConstraints(
                 SizeConstraint::flexible(0),
