@@ -131,7 +131,7 @@ pub fn create_options_menu(
         });
     font_anti_aliasing_selector
         .borrow_mut()
-        .set_callback(callback!([config, context] (aa_index) {
+        .set_change_tab_callback(callback!([config, context] (aa_index) {
             let old_aa_index = config.borrow().font_aa_mode;
             match aa_index {
                 0 => config.borrow_mut().font_aa_mode = FontAntiAliasingMode::NoAA,
@@ -179,7 +179,7 @@ pub fn create_options_menu(
         });
     line_anti_aliasing_selector
         .borrow_mut()
-        .set_callback(callback! ([config] (aa_index) {
+        .set_change_tab_callback(callback! ([config] (aa_index) {
             match aa_index {
                 0 => config.borrow_mut().curves_aa_mode = CurvesAAMode::NoAntiAliasing,
                 1 => config.borrow_mut().curves_aa_mode = CurvesAAMode::AntiAliasingX2,
@@ -216,9 +216,8 @@ pub fn create_options_menu(
             ColorTheme::Beige => 1,
             ColorTheme::Light => 2,
         });
-    theme_selector
-        .borrow_mut()
-        .set_callback(callback!([config, context] (color_theme) {
+    theme_selector.borrow_mut().set_change_tab_callback(
+        callback!([config, context] (color_theme) {
                 match color_theme {
                     0 => config.borrow_mut().color_theme = ColorTheme::Dark,
                     1 => config.borrow_mut().color_theme = ColorTheme::Beige,
@@ -231,7 +230,8 @@ pub fn create_options_menu(
                     .gui_system
                     .set_color_theme(*get_gui_color_theme(&config.borrow()));
             }
-        ));
+        ),
+    );
 
     options_menu
 }

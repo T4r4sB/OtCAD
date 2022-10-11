@@ -1,11 +1,11 @@
 use num::traits::*;
 use num::NumCast;
 
-use crate::curves::*;
 use crate::points::*;
+use crate::*;
 use application::image::*;
 
-fn minimal_neg_value<T: Float + std::fmt::Display>(x1: T, x2: T, a: T, b: T, c: T) -> T {
+fn minimal_neg_value<T: Float>(x1: T, x2: T, a: T, b: T, c: T) -> T {
     let f = |x| (a * x + b) * x + c;
 
     let mut x1 = x1;
@@ -54,12 +54,12 @@ struct QuadFunc<T: Float> {
 }
 
 impl<T: Float> QuadFunc<T> {
-    fn curve(curve: &Curve<T>, x0: T, y0: T) -> Self {
+    fn clocc(clocc: &CLoCC<T>, x0: T, y0: T) -> Self {
         Self {
-            dd: curve.a + curve.a,
-            dx: curve.n.x + curve.a * (x0 + x0 + T::one()),
-            dy: curve.n.y + curve.a * (y0 + y0 + T::one()),
-            v: curve.get_value(Point::new(x0, y0)),
+            dd: clocc.a + clocc.a,
+            dx: clocc.n.x + clocc.a * (x0 + x0 + T::one()),
+            dy: clocc.n.y + clocc.a * (y0 + y0 + T::one()),
+            v: clocc.get_value(Point::new(x0, y0)),
         }
     }
 
@@ -95,17 +95,17 @@ impl<T: Float> ProjectivePoint<T> {
     }
 }
 
-fn draw_rhombe<T: Float + std::fmt::Display>(
+fn draw_rhombe<T: Float>(
     size: ImageSize,
     top: &ProjectivePoint<T>,
     left: &ProjectivePoint<T>,
     right: &ProjectivePoint<T>,
     bottom: &ProjectivePoint<T>,
-    left_top: &Curve<T>,
-    left_bottom: &Curve<T>,
-    right_top: &Curve<T>,
-    right_bottom: &Curve<T>,
-    buffer: &mut [(usize, usize)],
+    left_top: &CLoCC<T>,
+    left_bottom: &CLoCC<T>,
+    right_top: &CLoCC<T>,
+    right_bottom: &CLoCC<T>,
+    span_buffer: &mut [(usize, usize)],
 ) -> (usize, usize) {
     if right.p.x <= T::zero() || bottom.p.y <= T::zero() {
         return (0, 0);
@@ -228,8 +228,8 @@ fn draw_rhombe<T: Float + std::fmt::Display>(
             left_top.a * fy * fy + left_top.n.y * fy + left_top.c,
         );
         let mut x: usize = NumCast::from(fx).unwrap();
-        let mut qf = QuadFunc::curve(left_top, fx, fy);
-        buffer[uy1].0 = NumCast::from(x).unwrap();
+        let mut qf = QuadFunc::clocc(left_top, fx, fy);
+        span_buffer[uy1].0 = NumCast::from(x).unwrap();
         qf.step_x_left();
         for y in uy1 + 1..ul {
             qf.step_y();
@@ -237,7 +237,7 @@ fn draw_rhombe<T: Float + std::fmt::Display>(
                 x -= 1;
                 qf.step_x_left();
             }
-            buffer[y].0 = NumCast::from(x).unwrap();
+            span_buffer[y].0 = NumCast::from(x).unwrap();
         }
     }
 
@@ -251,15 +251,15 @@ fn draw_rhombe<T: Float + std::fmt::Display>(
             left_bottom.a * fy * fy + left_bottom.n.y * fy + left_bottom.c,
         );
         let mut x: usize = NumCast::from(fx).unwrap();
-        let mut qf = QuadFunc::curve(left_bottom, fx, fy);
-        buffer[ul].0 = NumCast::from(x).unwrap();
+        let mut qf = QuadFunc::clocc(left_bottom, fx, fy);
+        span_buffer[ul].0 = NumCast::from(x).unwrap();
         for y in ul + 1..uy2 {
             qf.step_y();
             while x < uright && qf.get_value() > T::zero() {
                 x += 1;
                 qf.step_x_right();
             }
-            buffer[y].0 = NumCast::from(x).unwrap();
+            span_buffer[y].0 = NumCast::from(x).unwrap();
         }
     }
 
@@ -273,15 +273,15 @@ fn draw_rhombe<T: Float + std::fmt::Display>(
             -(right_top.a * fy * fy + right_top.n.y * fy + right_top.c),
         );
         let mut x: usize = NumCast::from(fx).unwrap();
-        let mut qf = QuadFunc::curve(right_top, fx, fy);
-        buffer[uy1].1 = NumCast::from(x).unwrap();
+        let mut qf = QuadFunc::clocc(right_top, fx, fy);
+        span_buffer[uy1].1 = NumCast::from(x).unwrap();
         for y in uy1 + 1..ur {
             qf.step_y();
             while x < uright && qf.get_value() <= T::zero() {
                 x += 1;
                 qf.step_x_right();
             }
-            buffer[y].1 = NumCast::from(x).unwrap();
+            span_buffer[y].1 = NumCast::from(x).unwrap();
         }
     }
 
@@ -295,8 +295,8 @@ fn draw_rhombe<T: Float + std::fmt::Display>(
             -(right_bottom.a * fy * fy + right_bottom.n.y * fy + right_bottom.c),
         );
         let mut x: usize = NumCast::from(fx).unwrap();
-        let mut qf = QuadFunc::curve(right_bottom, fx, fy);
-        buffer[ur].1 = NumCast::from(x).unwrap();
+        let mut qf = QuadFunc::clocc(right_bottom, fx, fy);
+        span_buffer[ur].1 = NumCast::from(x).unwrap();
         qf.step_x_left();
         for y in ur + 1..uy2 {
             qf.step_y();
@@ -304,19 +304,19 @@ fn draw_rhombe<T: Float + std::fmt::Display>(
                 x -= 1;
                 qf.step_x_left();
             }
-            buffer[y].1 = NumCast::from(x).unwrap();
+            span_buffer[y].1 = NumCast::from(x).unwrap();
         }
     }
 
     (uy1, uy2)
 }
 
-fn draw_quadrant<T: Float + std::fmt::Display>(
+fn draw_quadrant<T: Float>(
     size: ImageSize,
-    border_funcs: [&Curve<T>; 4],
+    border_funcs: [&CLoCC<T>; 4],
     corners: [&ProjectivePoint<T>; 4],
     q: usize,
-    buffer: &mut [(usize, usize)],
+    span_buffer: &mut [(usize, usize)],
 ) -> (usize, usize) {
     draw_rhombe(
         size,
@@ -328,19 +328,19 @@ fn draw_quadrant<T: Float + std::fmt::Display>(
         border_funcs[(3 - q) % 4],
         border_funcs[(5 - q) % 4],
         border_funcs[(6 - q) % 4],
-        buffer,
+        span_buffer,
     )
 }
 
 fn use_quadrant_bounds(
     dst: &mut ImageViewMut<u32>,
-    buffer: &[(usize, usize)],
+    span_buffer: &[(usize, usize)],
     ybounds: (usize, usize),
     color: u32,
 ) {
     for y in ybounds.0..ybounds.1 {
         let line = &mut dst[y];
-        for x in buffer[y].0..buffer[y].1 {
+        for x in span_buffer[y].0..span_buffer[y].1 {
             line[x] = color;
         }
     }
@@ -348,14 +348,14 @@ fn use_quadrant_bounds(
 
 fn use_quadrant_bounds_aa2(
     dst: &mut ImageViewMut<u32>,
-    buffer: &[(usize, usize)],
+    span_buffer: &[(usize, usize)],
     ybounds: (usize, usize),
     color: u32,
 ) {
     let color = color & 0xFCFCFC;
     for y in ybounds.0..ybounds.1 {
         let line = &mut dst[y / 2];
-        for x in buffer[y].0..buffer[y].1 {
+        for x in span_buffer[y].0..span_buffer[y].1 {
             let dst = &mut line[x / 2];
             let d = *dst & 0xFCFCFC;
             *dst = u32::wrapping_add(d, u32::wrapping_sub(color, d) >> 2);
@@ -365,7 +365,7 @@ fn use_quadrant_bounds_aa2(
 
 fn use_quadrant_bounds_aa4(
     dst: &mut ImageViewMut<u32>,
-    buffer: &[(usize, usize)],
+    span_buffer: &[(usize, usize)],
     ybounds: (usize, usize),
     color: u32,
 ) {
@@ -375,7 +375,7 @@ fn use_quadrant_bounds_aa4(
     let ca = color & 0xff000000;
     for y in ybounds.0..ybounds.1 {
         let line = &mut dst[y / 4];
-        for x in buffer[y].0..buffer[y].1 {
+        for x in span_buffer[y].0..span_buffer[y].1 {
             let dst = &mut line[x / 4];
             let dr = *dst & 0x000000ff;
             let dg = *dst & 0x0000ff00;
@@ -390,31 +390,31 @@ fn use_quadrant_bounds_aa4(
     }
 }
 
-pub fn draw_curve<T: Float + std::fmt::Display>(
+pub fn draw_locc<T: Float>(
     dst: &mut ImageViewMut<u32>,
-    entity: &Entity<T>,
+    locc: &LoCC<T>,
     color: u32,
     width: T,
-    buffer: &mut [(usize, usize)],
+    span_buffer: &mut [(usize, usize)],
     anti_aliasing: usize,
 ) {
     assert!(anti_aliasing == 1 || anti_aliasing == 2 || anti_aliasing == 4);
-    let entity = entity.scale(T::from(anti_aliasing).unwrap());
-    let curve = entity.get_curve();
+    let entity = locc.scale(T::from(anti_aliasing).unwrap());
+    let curve = entity.get_clocc();
     let width = width * T::from(anti_aliasing).unwrap();
     let half_width = width / (T::one() + T::one());
 
     let out_curve = curve.change_radius(half_width).unwrap();
     let maybe_in_curve = curve.change_radius(-half_width);
-    let in_curve = maybe_in_curve.unwrap_or(Curve::zero()).neg();
+    let in_curve = maybe_in_curve.unwrap_or(CLoCC::zero()).neg();
 
-    let vert_curve = Curve::<T> {
+    let vert_curve = CLoCC::<T> {
         a: T::zero(),
         n: Point::new(curve.a + curve.a, T::zero()),
         c: curve.n.x,
     };
 
-    let horz_curve = Curve::<T> {
+    let horz_curve = CLoCC::<T> {
         a: T::zero(),
         n: Point::new(T::zero(), curve.a + curve.a),
         c: curve.n.y,
@@ -478,9 +478,9 @@ pub fn draw_curve<T: Float + std::fmt::Display>(
         ($ys: ident) => {{
             let ys = $ys;
             match anti_aliasing {
-                2 => use_quadrant_bounds_aa2(dst, buffer, ys, color),
-                4 => use_quadrant_bounds_aa4(dst, buffer, ys, color),
-                _ => use_quadrant_bounds(dst, buffer, ys, color),
+                2 => use_quadrant_bounds_aa2(dst, span_buffer, ys, color),
+                4 => use_quadrant_bounds_aa4(dst, span_buffer, ys, color),
+                _ => use_quadrant_bounds(dst, span_buffer, ys, color),
             }
         }};
     }
@@ -490,7 +490,7 @@ pub fn draw_curve<T: Float + std::fmt::Display>(
         dst.get_size().1 * anti_aliasing,
     );
     match entity {
-        Entity::Curve(_) => {
+        LoCC::CLoCC(_) => {
             for q in 0..4 {
                 let ys = draw_quadrant(
                     view_bounds,
@@ -507,22 +507,22 @@ pub fn draw_curve<T: Float + std::fmt::Display>(
                         &default_out_points[(q + 1) % 4],
                     ],
                     q,
-                    buffer,
+                    span_buffer,
                 );
                 use_quadrant!(ys);
             }
         }
-        Entity::CurveSegment(s) => {
+        LoCC::SoCC(s) => {
             let begin_direction = s.begin_direction();
             let end_direction = s.end_direction();
 
-            let begin_curve = Curve {
+            let begin_curve = CLoCC {
                 a: T::zero(),
                 n: -begin_direction.rot90(),
                 c: dot(s.begin, begin_direction.rot90()),
             };
 
-            let end_curve = Curve {
+            let end_curve = CLoCC {
                 a: T::zero(),
                 n: end_direction.rot90(),
                 c: -dot(s.end, end_direction.rot90()),
@@ -571,7 +571,7 @@ pub fn draw_curve<T: Float + std::fmt::Display>(
                         &end_out_point,
                     ],
                     q,
-                    buffer,
+                    span_buffer,
                 );
                 use_quadrant!(ys);
             } else {
@@ -591,7 +591,7 @@ pub fn draw_curve<T: Float + std::fmt::Display>(
                         &default_out_points[(q + 1) % 4],
                     ],
                     q,
-                    buffer,
+                    span_buffer,
                 );
                 use_quadrant!(ys);
                 q = (q + 1) % 4;
@@ -612,7 +612,7 @@ pub fn draw_curve<T: Float + std::fmt::Display>(
                             &default_out_points[(q + 1) % 4],
                         ],
                         q,
-                        buffer,
+                        span_buffer,
                     );
                     use_quadrant!(ys);
                     q = (q + 1) % 4;
@@ -633,7 +633,7 @@ pub fn draw_curve<T: Float + std::fmt::Display>(
                         &end_out_point,
                     ],
                     q,
-                    buffer,
+                    span_buffer,
                 );
                 use_quadrant!(ys);
             }
@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn fuzzy_test_line() {
         let mut dst = Image::<u32>::new((4096, 4096));
-        let mut buffer = vec![(0, 0); dst.get_size().1 * 4];
+        let mut span_buffer = vec![(0, 0); dst.get_size().1 * 4];
 
         for i in 0..2_000 {
             let mut rng = rand::rngs::StdRng::seed_from_u64(i);
@@ -660,20 +660,20 @@ mod tests {
             let pt1 = Point::new(x1, y1);
             let pt2 = Point::new(x2, y2);
 
-            let c = Curve::<f32>::line(pt1, pt2);
-            let e = &Entity::CurveSegment(CurveSegment {
-                curve: c,
+            let c = CLoCC::<f32>::line(pt1, pt2);
+            let e = &LoCC::SoCC(SoCC {
+                clocc: c,
                 begin: pt1,
                 end: pt2,
                 big: false,
             });
 
-            draw_curve(
+            draw_locc(
                 &mut dst.as_view_mut(),
                 &e,
                 0,
                 rng.gen_range(0.001..10.0),
-                &mut buffer,
+                &mut span_buffer,
                 4,
             );
         }
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn fuzzy_test_circle() {
         let mut dst = Image::<u32>::new((4096, 4096));
-        let mut buffer = vec![(0, 0); dst.get_size().1 * 4];
+        let mut span_buffer = vec![(0, 0); dst.get_size().1 * 4];
 
         for i in 0..2_000 {
             let mut rng = rand::rngs::StdRng::seed_from_u64(i);
@@ -695,20 +695,20 @@ mod tests {
             let angle1 = rng.gen_range(0.0..PI * 2.0);
             let angle2 = rng.gen_range(0.0..PI * 2.0);
 
-            let c = Curve::<f32>::circle(center, radius);
-            let e = &Entity::CurveSegment(CurveSegment {
-                curve: c,
+            let c = CLoCC::<f32>::circle(center, radius);
+            let e = &LoCC::SoCC(SoCC {
+                clocc: c,
                 begin: center + Point::angle(angle1).scale(radius),
                 end: center + Point::angle(angle1 + angle2).scale(radius),
                 big: angle2 > PI,
             });
 
-            draw_curve(
+            draw_locc(
                 &mut dst.as_view_mut(),
                 &e,
                 0,
                 rng.gen_range(0.001..10.0),
-                &mut buffer,
+                &mut span_buffer,
                 4,
             );
         }
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn correct_test_line() {
         let mut dst = Image::<u32>::new((64, 64));
-        let mut buffer = vec![(0, 0); dst.get_size().1];
+        let mut span_buffer = vec![(0, 0); dst.get_size().1];
 
         for i in 0..10_000 {
             let mut rng = rand::rngs::StdRng::seed_from_u64(i);
@@ -730,31 +730,31 @@ mod tests {
             let pt1 = Point::new(x1, y1);
             let pt2 = Point::new(x2, y2);
 
-            let c = Curve::<f32>::line(pt1, pt2);
-            let s = CurveSegment {
-                curve: c,
+            let c = CLoCC::<f32>::line(pt1, pt2);
+            let s = SoCC {
+                clocc: c,
                 begin: pt1,
                 end: pt2,
                 big: false,
             };
-            let e = Entity::CurveSegment(s);
+            let e = LoCC::SoCC(s);
 
             let width = rng.gen_range(0.001..40.0);
             let half_width = width * 0.5;
-            draw_curve(&mut dst.as_view_mut(), &e, 0, width, &mut buffer, 1);
+            draw_locc(&mut dst.as_view_mut(), &e, 0, width, &mut span_buffer, 1);
             let out_curve = c.change_radius(half_width).unwrap();
-            let in_curve = c.change_radius(-half_width).unwrap_or(Curve::zero()).neg();
+            let in_curve = c.change_radius(-half_width).unwrap_or(CLoCC::zero()).neg();
 
             let begin_direction = s.begin_direction();
             let end_direction = s.end_direction();
 
-            let begin_curve = Curve {
+            let begin_curve = CLoCC {
                 a: 0.0,
                 n: -begin_direction.rot90(),
                 c: dot(s.begin, begin_direction.rot90()),
             };
 
-            let end_curve = Curve {
+            let end_curve = CLoCC {
                 a: 0.0,
                 n: end_direction.rot90(),
                 c: -dot(s.end, end_direction.rot90()),
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn correct_test_circle() {
         let mut dst = Image::<u32>::new((64, 64));
-        let mut buffer = vec![(0, 0); dst.get_size().1];
+        let mut span_buffer = vec![(0, 0); dst.get_size().1];
 
         for i in 0..10_000 {
             let mut rng = rand::rngs::StdRng::seed_from_u64(i);
@@ -799,31 +799,31 @@ mod tests {
             let angle1 = rng.gen_range(0.0..PI * 2.0);
             let angle2 = rng.gen_range(0.0..PI * 2.0);
 
-            let c = Curve::<f32>::circle(center, radius);
-            let s = CurveSegment {
-                curve: c,
+            let c = CLoCC::<f32>::circle(center, radius);
+            let s = SoCC {
+                clocc: c,
                 begin: center + Point::angle(angle1).scale(radius),
                 end: center + Point::angle(angle1 + angle2).scale(radius),
                 big: angle2 > PI,
             };
-            let e = Entity::CurveSegment(s);
+            let e = LoCC::SoCC(s);
 
             let width = rng.gen_range(0.001..40.0);
             let half_width = width * 0.5;
-            draw_curve(&mut dst.as_view_mut(), &e, 0, width, &mut buffer, 1);
+            draw_locc(&mut dst.as_view_mut(), &e, 0, width, &mut span_buffer, 1);
             let out_curve = c.change_radius(half_width).unwrap();
-            let in_curve = c.change_radius(-half_width).unwrap_or(Curve::zero()).neg();
+            let in_curve = c.change_radius(-half_width).unwrap_or(CLoCC::zero()).neg();
 
             let begin_direction = s.begin_direction();
             let end_direction = s.end_direction();
 
-            let begin_curve = Curve {
+            let begin_curve = CLoCC {
                 a: 0.0,
                 n: -begin_direction.rot90(),
                 c: dot(s.begin, begin_direction.rot90()),
             };
 
-            let end_curve = Curve {
+            let end_curve = CLoCC {
                 a: 0.0,
                 n: end_direction.rot90(),
                 c: -dot(s.end, end_direction.rot90()),

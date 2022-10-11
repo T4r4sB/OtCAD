@@ -123,7 +123,7 @@ impl GDIFontLoader {
                             let mut new_image = Image::new(rect);
                             new_image
                                 .as_view_mut()
-                                .draw(dst.as_view(), (0, 0), |d, s| *d = *s == 0);
+                                .draw(&dst.as_view(), (0, 0), |d, s| *d = *s == 0);
                             result.insert(c, Glyph::NoAA(new_image));
                         }
                         FontAntiAliasingMode::AA => {
@@ -131,12 +131,12 @@ impl GDIFontLoader {
                             let mut new_image_dark = Image::new(rect);
                             new_image_dark
                                 .as_view_mut()
-                                .draw(dst.as_view(), (0, 0), |d, s| *d = 0xFF - (*s & 0xFF) as u8);
+                                .draw(&dst.as_view(), (0, 0), |d, s| *d = 0xFF - (*s & 0xFF) as u8);
                             draw_white!();
                             let mut new_image_light = Image::new(rect);
                             new_image_light
                                 .as_view_mut()
-                                .draw(dst.as_view(), (0, 0), |d, s| *d = (*s & 0xFF) as u8);
+                                .draw(&dst.as_view(), (0, 0), |d, s| *d = (*s & 0xFF) as u8);
                             result.insert(c, Glyph::AA(new_image_dark, new_image_light));
                         }
                         FontAntiAliasingMode::TT => {
@@ -144,12 +144,12 @@ impl GDIFontLoader {
                             let mut new_image_dark = Image::new(rect);
                             new_image_dark
                                 .as_view_mut()
-                                .draw(dst.as_view(), (0, 0), |d, s| *d = !*s);
+                                .draw(&dst.as_view(), (0, 0), |d, s| *d = !*s);
                             draw_white!();
                             let mut new_image_light = Image::new(rect);
                             new_image_light
                                 .as_view_mut()
-                                .draw(dst.as_view(), (0, 0), |d, s| *d = *s);
+                                .draw(&dst.as_view(), (0, 0), |d, s| *d = *s);
                             result.insert(c, Glyph::TT(new_image_dark, new_image_light));
                         }
                     }

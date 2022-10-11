@@ -64,6 +64,12 @@ impl std::fmt::Debug for HotkeyCallback {
     }
 }
 
+impl HotkeyCallback {
+    pub fn new(f: Rc<dyn Fn() + 'static>) -> Self {
+        Self(f)
+    }
+}
+
 #[derive(Debug)]
 pub struct GuiControlBase {
     pub(crate) size_constraints: SizeConstraints,
@@ -106,6 +112,17 @@ impl GuiControlBase {
         self.size_constraints = constraints;
         self.current_size_constraints = constraints;
         self.minimal_size = (constraints.0.absolute, constraints.1.absolute);
+    }
+
+    pub fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    pub fn get_size(&self) -> Position {
+        (
+            self.rect.right_bottom.0 - self.rect.left_top.0,
+            self.rect.right_bottom.1 - self.rect.left_top.1,
+        )
     }
 }
 
@@ -155,10 +172,10 @@ pub static DARK_THEME: GuiColorTheme = GuiColorTheme {
     background: 0x000000,
     font: 0xCCCCCC,
     splitter: 0xAACCAA,
-    highlight: 0x9999CC,
+    highlight: 0xCCAA88,
     pressed: 0xFFFFFF,
     selected: 0x66CC66,
-    inactive: 0x555555,
+    inactive: 0x666666,
     edit_focused: 0x999999,
 };
 
@@ -169,7 +186,7 @@ pub static LIGHT_THEME: GuiColorTheme = GuiColorTheme {
     highlight: 0x779966,
     pressed: 0x222222,
     selected: 0xCC8844,
-    inactive: 0xAAAAAA,
+    inactive: 0xBBBBBB,
     edit_focused: 0xEEEEEE,
 };
 

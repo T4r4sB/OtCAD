@@ -10,17 +10,19 @@ use window::*;
 use bottom_panel::*;
 use config::*;
 use editor::*;
-use file_menu::*;
 use top_panel::*;
 
 mod bottom_panel;
 mod config;
+mod document;
 mod draw_menu;
+mod edit_menu;
 mod editor;
 mod file_menu;
 mod group_menu;
 mod gui_helper;
 mod options_menu;
+mod picts;
 mod top_panel;
 mod transform_menu;
 
@@ -66,16 +68,14 @@ impl GuiTest {
         let middle = root
             .borrow_mut()
             .add_child(TabControl::new(font_height, default_font.clone(), true).compressed());
-
-        for _ in 1..7 {
-            new_file(&default_font, editor.clone(), middle.clone());
-        }
+        editor
+            .borrow_mut()
+            .set_tab_control(default_font.clone(), middle.clone());
 
         create_top_panel(
             &mut root.borrow_mut(),
             &default_font,
             editor.clone(),
-            middle.clone(),
             context.clone(),
             top_panel_index,
         );
@@ -97,6 +97,9 @@ impl GuiTest {
 
 impl window::Application for GuiTest {
     fn on_create(&mut self, context: Rc<RefCell<window::Context>>) {
+        for _ in 1..7 {
+            self.editor.borrow_mut().add_random_document();
+        }
         Self::rebuild_gui(self.editor.clone(), context.clone(), DRAW_MENU_INDEX);
     }
 

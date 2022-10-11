@@ -505,6 +505,7 @@ unsafe fn maybe_window_proc(
                 LOWORD(lparam as u32) as i16 as i32,
                 HIWORD(lparam as u32) as i16 as i32,
             );
+
             let (_, _, context) = get_context()?;
             if context.borrow_mut().gui_system.on_mouse_down(position) {
                 run_jobs(context.clone(), hwnd)?;

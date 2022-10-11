@@ -422,8 +422,12 @@ impl Button {
         Self::new_with_hotkey(size_constraints, text, font, None)
     }
 
+    pub fn set_callback_impl(&mut self, callback: ButtonCallback) {
+        self.callback = Some(callback);
+    }
+
     pub fn set_callback(&mut self, callback: impl Fn() + 'static) {
-        self.callback = Some(ButtonCallback(Rc::new(callback)));
+        self.set_callback_impl(ButtonCallback(Rc::new(callback)));
     }
 
     pub fn global(mut self) -> Self {
@@ -822,14 +826,13 @@ impl std::fmt::Debug for EnterCallback {
 #[derive(Debug)]
 pub struct Edit {
     base: GuiControlBase,
-    text: Vec<char>,
+    text: String,
     font: Font,
     clipboard: Clipboard,
     scroll_position: i32,
     cursor_position: i32,
     skip_callback: Option<SkipCallback>,
     enter_callback: Option<EnterCallback>,
-    suka_down: bool,
 }
 
 impl Edit {
@@ -845,12 +848,11 @@ impl Edit {
             cursor_position: 0,
             skip_callback: None,
             enter_callback: None,
-            suka_down: false,
         }
     }
 
     pub fn set_text(&mut self, text: &str) {
-        self.text = text.chars().collect();
+        self.text = text.to_string();
         self.adjust_cursor_position();
     }
 
@@ -882,26 +884,46 @@ impl Edit {
         self.adjust_cursor_position();
     }
 
+    fn next_position(&self, position: i32) -> i32 {
+        let mut result = position + 1;
+        while !self.text.is_char_boundary(result as usize) {
+            result += 1;
+        }
+        result
+    }
+
+    fn prev_position(&self, position: i32) -> i32 {
+        let mut result = position - 1;
+        while !self.text.is_char_boundary(result as usize) {
+            result -= 1;
+        }
+        result
+    }
+
     fn adjust_cursor_position(&mut self) {
-        if self.cursor_position < self.scroll_position + 1 {
-            self.scroll_position = max(0, self.cursor_position - 1);
+        if self.cursor_position <= self.scroll_position {
+            if self.cursor_position == 0 {
+                self.scroll_position = 0;
+            } else {
+                self.scroll_position = self.prev_position(self.cursor_position);
+            }
             return;
         }
 
         let width = self.base.rect.right_bottom.0 - self.base.rect.left_top.0 - 4;
         let mut minimal_scroll = min(self.cursor_position, self.text.len() as i32);
         let mut width_before_cursor = 0;
-        let mut buffer = [0u8; 4];
         while minimal_scroll > self.scroll_position {
+            let prev_scroll = self.prev_position(minimal_scroll);
             width_before_cursor += self
                 .font
-                .get_size(self.text[(minimal_scroll - 1) as usize].encode_utf8(&mut buffer))
+                .get_size(&self.text[prev_scroll as usize..minimal_scroll as usize])
                 .0 as i32;
             if width_before_cursor > width {
                 break;
             }
 
-            minimal_scroll -= 1;
+            minimal_scroll = prev_scroll;
         }
 
         self.scroll_position = minimal_scroll;
@@ -916,13 +938,10 @@ impl Edit {
 
     fn paste(&mut self) -> bool {
         if let Some(text) = self.clipboard.get_string() {
-            for c in text.chars() {
-                if Self::char_is_valid(c) {
-                    self.text.insert(self.cursor_position as usize, c);
-                    self.cursor_position += 1;
-                }
-            }
-
+            let filtered_text: String = text.chars().filter(|c| Self::char_is_valid(*c)).collect();
+            self.text
+                .insert_str(self.cursor_position as usize, &filtered_text);
+            self.cursor_position += filtered_text.len() as i32;
             self.adjust_cursor_position();
             return true;
         }
@@ -966,40 +985,37 @@ impl GuiControl for Edit {
 
                         inner.fill(|d| *d = color);
                         if self.base.focus {
-                            let text_before_cursor: String = self.text
-                                [self.scroll_position as usize..self.cursor_position as usize]
-                                .iter()
-                                .collect();
-                            let cursor_position = self.font.get_size(&text_before_cursor).0;
-                            if cursor_position + 2 <= x - 2 {
+                            let text_before_cursor = &self.text
+                                [self.scroll_position as usize..self.cursor_position as usize];
+                            let cursor_position_on_screen =
+                                self.font.get_size(&text_before_cursor).0;
+                            if cursor_position_on_screen + 2 <= x - 2 {
                                 inner
-                                    .window_mut((cursor_position, 0), (cursor_position + 2, y - 2))
+                                    .window_mut(
+                                        (cursor_position_on_screen, 0),
+                                        (cursor_position_on_screen + 2, y - 2),
+                                    )
                                     .fill(|p| *p = border_color);
                             }
                         }
 
-                        let mut visible_text = String::new();
                         let mut width = 0;
-                        let mut pos = self.scroll_position as usize;
-                        loop {
-                            if pos >= self.text.len() {
-                                break;
-                            }
+                        let mut pos = self.scroll_position;
+                        while pos < self.text.len() as i32 {
+                            let next_pos = self.next_position(pos);
 
-                            let mut buffer = [0u8; 4];
                             width += self
                                 .font
-                                .get_size(self.text[pos].encode_utf8(&mut buffer))
+                                .get_size(&self.text[pos as usize..next_pos as usize])
                                 .0;
-                            visible_text.push(self.text[pos]);
                             if width > x - 2 {
                                 break;
                             }
-                            pos += 1;
+                            pos = next_pos;
                         }
 
                         self.font.color(theme.font).draw(
-                            &visible_text,
+                            &self.text[self.scroll_position as usize..pos as usize],
                             (1, (y / 2) as i32),
                             &mut inner,
                         );
@@ -1011,21 +1027,20 @@ impl GuiControl for Edit {
             GuiMessage::MouseDown(position) => {
                 let mut width_before_mouse = 0;
                 let mut char_index = self.scroll_position;
-                let mut buffer = [0u8; 4];
                 let cursor_x = position.0 - self.base.rect.left_top.0 - 1;
                 while char_index < self.text.len() as i32 {
+                    let next_index = self.next_position(char_index);
                     let new_symbol_width = self
                         .font
-                        .get_size(self.text[char_index as usize].encode_utf8(&mut buffer))
+                        .get_size(&self.text[char_index as usize..next_index as usize])
                         .0 as i32;
                     if width_before_mouse + new_symbol_width / 2 > cursor_x {
                         break;
                     }
-                    char_index += 1;
+                    char_index = next_index;
                     width_before_mouse += new_symbol_width;
                 }
                 self.cursor_position = char_index;
-                self.suka_down = true;
                 return true;
             }
             GuiMessage::MouseUp(_, _) => {
@@ -1034,7 +1049,7 @@ impl GuiControl for Edit {
             GuiMessage::Char(c) => {
                 if Self::char_is_valid(c) {
                     self.text.insert(self.cursor_position as usize, c);
-                    self.cursor_position += 1;
+                    self.cursor_position += c.len_utf8() as i32;
                     self.adjust_cursor_position();
                     return true;
                 }
@@ -1058,14 +1073,14 @@ impl GuiControl for Edit {
                 match k {
                     Key::Left => {
                         if self.cursor_position > 0 {
-                            self.cursor_position -= 1;
+                            self.cursor_position = self.prev_position(self.cursor_position);
                             self.adjust_cursor_position();
                             return true;
                         }
                     }
                     Key::Right => {
                         if self.cursor_position < self.text.len() as i32 {
-                            self.cursor_position += 1;
+                            self.cursor_position = self.next_position(self.cursor_position);
                             self.adjust_cursor_position();
                             return true;
                         }
@@ -1079,8 +1094,8 @@ impl GuiControl for Edit {
                     }
                     Key::Backspace => {
                         if self.cursor_position > 0 {
-                            self.text.remove(self.cursor_position as usize - 1);
-                            self.cursor_position -= 1;
+                            self.cursor_position = self.prev_position(self.cursor_position);
+                            self.text.remove(self.cursor_position as usize);
                             self.adjust_cursor_position();
                             return true;
                         }
@@ -1095,7 +1110,7 @@ impl GuiControl for Edit {
                     }
                     Key::Enter => {
                         if let Some(EnterCallback(enter_callback)) = &self.enter_callback {
-                            let text: String = self.text.iter().collect();
+                            let text = self.text.clone();
                             job_system.add_callback(Rc::new(callback!([enter_callback] () {
                                 enter_callback(&text);
                             })));
@@ -1110,7 +1125,7 @@ impl GuiControl for Edit {
             }
             GuiMessage::FocusLose(job_system) => {
                 if let Some(EnterCallback(enter_callback)) = &self.enter_callback {
-                    let text: String = self.text.iter().collect();
+                    let text = self.text.clone();
                     job_system.add_callback(Rc::new(callback!([enter_callback] () {
                         enter_callback(&text);
                     })));
@@ -1422,7 +1437,8 @@ struct RadioGroupInternal {
     buttons: Vec<Weak<RefCell<Button>>>,
     close_buttons: Vec<Weak<RefCell<Button>>>,
     selected_id: usize,
-    callback: Option<RadioGroupCallback>,
+    change_tab_callback: Option<RadioGroupCallback>,
+    close_tab_callback: Option<RadioGroupCallback>,
     selection_history: Vec<usize>,
     ids: Vec<usize>,
 }
@@ -1457,7 +1473,8 @@ impl RadioGroup {
                 buttons: Vec::new(),
                 close_buttons: Vec::new(),
                 selected_id: 0,
-                callback: None,
+                change_tab_callback: None,
+                close_tab_callback: None,
                 selection_history: Vec::new(),
                 ids: Vec::new(),
             })),
@@ -1484,13 +1501,14 @@ impl RadioGroup {
         self.internal.borrow().selected_id
     }
 
-    pub fn set_callback(&mut self, callback: impl Fn(usize) + 'static) {
-        self.internal.borrow_mut().callback = Some(RadioGroupCallback(Rc::new(callback)));
+    pub fn set_change_tab_callback(&mut self, change_tab_callback: impl Fn(usize) + 'static) {
+        self.internal.borrow_mut().change_tab_callback =
+            Some(RadioGroupCallback(Rc::new(change_tab_callback)));
     }
 
-    pub fn callback(mut self, callback: impl Fn(usize) + 'static) -> Self {
-        self.set_callback(callback);
-        self
+    pub fn set_close_tab_callback(&mut self, close_tab_callback: impl Fn(usize) + 'static) {
+        self.internal.borrow_mut().close_tab_callback =
+            Some(RadioGroupCallback(Rc::new(close_tab_callback)));
     }
 
     fn find_index_by(ids: &[usize], id: usize) -> Option<usize> {
@@ -1534,7 +1552,7 @@ impl RadioGroup {
             radio_group_internal.selection_history.push(new_id);
             buttons.get(new_index).map(|b| set_state(b, true));
             close_buttons.get(new_index).map(|b| set_state(b, true));
-            if let Some(RadioGroupCallback(callback)) = &radio_group_internal.callback {
+            if let Some(RadioGroupCallback(callback)) = &radio_group_internal.change_tab_callback {
                 callback(new_id);
             }
         }
@@ -1544,11 +1562,7 @@ impl RadioGroup {
         Self::change_id_by(self.internal.borrow_mut().deref_mut(), new_id);
     }
 
-    fn add_button_with_close_callback(
-        &mut self,
-        button: Button,
-        close_callback: impl Fn() + 'static,
-    ) {
+    pub fn add_button(&mut self, button: Button) {
         let last_id = self.last_id;
         let mut button = if self.tab {
             button.tab_button()
@@ -1614,7 +1628,15 @@ impl RadioGroup {
                     .tab_button(),
                 );
 
-                button.borrow_mut().set_callback(close_callback);
+                {
+                    let internal = self.internal.clone();
+                    button.borrow_mut().set_callback(callback!( [internal] () {
+                        let maybe_close_callback =  internal.borrow().close_tab_callback.clone();
+                        if let Some(RadioGroupCallback(callback)) = maybe_close_callback {
+                            callback(last_id);
+                        }
+                    } ));
+                }
                 internal.close_buttons.push(Rc::downgrade(&button));
             }
             first = internal.ids.is_empty();
@@ -1626,14 +1648,10 @@ impl RadioGroup {
         self.last_id += 1;
     }
 
-    pub fn add_button(&mut self, button: Button) {
-        self.add_button_with_close_callback(button, || {});
-    }
-
     pub fn delete_button(&mut self, id: usize) {
         if let Some(index) = self.find_index(id) {
             self.container.delete_child(index);
-            let prev_id;
+            let mut prev_id = None;
             {
                 let mut internal = self.internal.borrow_mut();
                 if index < internal.buttons.len() {
@@ -1645,15 +1663,15 @@ impl RadioGroup {
                 if index < internal.ids.len() {
                     internal.ids.remove(index);
                 }
-                if Some(id) == internal.selection_history.last().map(|id| *id) {
-                    internal.selection_history.pop();
-                    prev_id = internal
-                        .selection_history
-                        .last()
-                        .or_else(|| internal.ids.get(0))
-                        .cloned();
-                } else {
-                    prev_id = None;
+                while !internal.selection_history.is_empty() {
+                    let last_selected_id = internal.selection_history.pop().unwrap();
+                    if Self::find_index_by(&internal.ids, last_selected_id).is_some() {
+                        prev_id = Some(last_selected_id);
+                        break;
+                    }
+                }
+                if prev_id.is_none() {
+                    prev_id = internal.ids.get(0).copied();
                 }
             }
             if let Some(prev_id) = prev_id {
@@ -1713,7 +1731,6 @@ impl TabControl {
         caption: String,
         width: i32,
         control: Control,
-        close_callback: impl Fn(usize) + 'static,
     ) -> (Rc<RefCell<Control>>, usize) {
         let tab_id = self.header.get_last_id();
         let (untyped, typed) = GuiSystem::create_rc_by_control(control);
@@ -1726,11 +1743,18 @@ impl TabControl {
             self.font.clone(),
         );
 
-        self.header
-            .add_button_with_close_callback(button, move || close_callback(tab_id));
+        self.header.add_button(button);
 
         self.children.push(untyped);
         (typed, tab_id)
+    }
+
+    pub fn set_change_tab_callback(&mut self, callback: impl Fn(usize) + 'static) {
+        self.header.set_change_tab_callback(callback);
+    }
+
+    pub fn set_close_tab_callback(&mut self, callback: impl Fn(usize) + 'static) {
+        self.header.set_close_tab_callback(callback);
     }
 
     pub fn add_tab<Control: GuiControl>(
@@ -1739,8 +1763,7 @@ impl TabControl {
         width: i32,
         control: Control,
     ) -> Rc<RefCell<Control>> {
-        self.add_tab_with_id(caption, width, control, |_: usize| {})
-            .0
+        self.add_tab_with_id(caption, width, control).0
     }
 
     fn hide_selected_tab(&self) {

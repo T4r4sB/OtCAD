@@ -204,7 +204,7 @@ impl Font {
         for c in text.chars() {
             match self.get_char(c, line) {
                 Some(Glyph::NoAA(img)) => {
-                    dst.draw(img.as_view(), position, |dst, src| {
+                    dst.draw(&img.as_view(), position, |dst, src| {
                         if *src {
                             *dst = color;
                         }
@@ -213,7 +213,7 @@ impl Font {
                 }
                 Some(Glyph::AA(img_black, img_white)) => {
                     let img = if self.light { &img_white } else { &img_black };
-                    dst.draw(img.as_view(), position, |dst, src| {
+                    dst.draw(&img.as_view(), position, |dst, src| {
                         let dst_r = (*dst & 0xFF) as i32;
                         let dst_g = ((*dst >> 8) & 0xFF) as i32;
                         let dst_b = ((*dst >> 16) & 0xFF) as i32;
@@ -238,7 +238,7 @@ impl Font {
                 }
                 Some(Glyph::TT(img_black, img_white)) => {
                     let img = if self.light { &img_white } else { &img_black };
-                    dst.draw(img.as_view(), position, |dst, src| {
+                    dst.draw(&img.as_view(), position, |dst, src| {
                         let dst_r = (*dst & 0xFF) as i32;
                         let dst_g = ((*dst >> 8) & 0xFF) as i32;
                         let dst_b = ((*dst >> 16) & 0xFF) as i32;

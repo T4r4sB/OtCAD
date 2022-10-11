@@ -31,7 +31,9 @@ macro_rules! lines {
 
 macro_rules! window {
     ($self: expr, $left_top: ident, $right_bottom: ident, $result: ident) => {
+        assert!($left_top.0 <= $right_bottom.0);
         assert!($right_bottom.0 <= $self.size.0);
+        assert!($left_top.1 <= $right_bottom.1);
         assert!($right_bottom.1 <= $self.size.1);
         unsafe {
             return $result::from_raw(
@@ -120,7 +122,7 @@ impl<'i, Pixel> ImageViewMut<'i, Pixel> {
 
     pub fn draw<SrcPixel>(
         &mut self,
-        src: ImageView<SrcPixel>,
+        src: &ImageView<SrcPixel>,
         position: Position,
         apply: impl Fn(&mut Pixel, &SrcPixel),
     ) {
@@ -193,6 +195,26 @@ impl<'i, Pixel> ImageViewMut<'i, Pixel> {
                     apply(&mut *dstx);
                     dstx = dstx.add(1);
                 }
+                dsty = dsty.add(self.stride);
+            }
+        }
+    }
+
+    pub fn fill_with_coord(&mut self, apply: impl Fn(&mut Pixel, (usize, usize))) {
+        unsafe {
+            let mut y = 0;
+            let mut dsty = self.memory;
+            let dsty_end = self.memory.add(self.stride * self.size.1);
+            while dsty < dsty_end {
+                let mut x = 0;
+                let mut dstx = dsty;
+                let dstx_end = dstx.add(self.size.0);
+                while dstx < dstx_end {
+                    apply(&mut *dstx, (x, y));
+                    x += 1;
+                    dstx = dstx.add(1);
+                }
+                y += 1;
                 dsty = dsty.add(self.stride);
             }
         }

@@ -1,7 +1,8 @@
 use num::traits::*;
+use serde::{Deserialize, Serialize};
 use std::ops::*;
 
-#[derive(Default, Debug, Copy, Clone, PartialEq)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Point<T: Float> {
     pub x: T,
     pub y: T,
@@ -48,6 +49,13 @@ impl<T: Float> Point<T> {
     pub fn complex_conj(self) -> Self {
         Self {
             x: self.x,
+            y: -self.y,
+        }
+    }
+
+    pub fn neg(self) -> Self {
+        Self {
+            x: -self.x,
             y: -self.y,
         }
     }

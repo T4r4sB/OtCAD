@@ -15,7 +15,6 @@ pub fn create_file_menu(
     parent: &mut TabControl,
     font: &Font,
     editor: Rc<RefCell<Editor>>,
-    draws: Rc<RefCell<TabControl>>,
 ) -> Rc<RefCell<Container>> {
     let menu_caption = "Файл";
     let file_menu = parent.add_tab(
@@ -43,8 +42,8 @@ pub fn create_file_menu(
                 Hotkey::ctrl(Key::N),
                 true,
             )
-            .callback(callback!([editor,draws]() {
-               new_file(&font,editor, draws );
+            .callback(callback!([editor]() {
+               new_file(font.clone(), editor);
             })),
         );
     }
@@ -89,10 +88,11 @@ pub fn create_file_menu(
                 true,
             ));
 
-    close_button.borrow_mut().set_callback(callback!([draws]() {
-        let id = draws.borrow().selected_tab_id();
-         draws.borrow_mut().delete_tab(id);
-    }));
+    close_button
+        .borrow_mut()
+        .set_callback(callback!([editor]() {
+            editor.borrow_mut().close_selected_tab();
+        }));
 
     let dxf_panel = file_menu.borrow_mut().add_child(Container::new(
         SizeConstraints(SizeConstraint::flexible(0), SizeConstraint::fixed(0)),
@@ -115,42 +115,9 @@ pub fn create_file_menu(
     file_menu
 }
 
-pub fn new_file(font: &Font, editor: Rc<RefCell<Editor>>, draws: Rc<RefCell<TabControl>>) {
-    let id = editor.borrow_mut().get_next_id();
-    let new_file_caption = format!("Новый чертёж {}", id);
-    let font_height = font.get_size("8").1 as i32 + 2;
-    let mut tab_content = Container::new(
-        SizeConstraints(SizeConstraint::flexible(0), SizeConstraint::flexible(0)),
-        ContainerLayout::Vertical,
-    );
-
-    tab_content.add_child(TextBox::new(
-        SizeConstraints(
-            SizeConstraint::flexible(0),
-            SizeConstraint::fixed(font_height),
-        ),
-        new_file_caption.clone(),
-        font.clone(),
-    ));
-
-    tab_content.add_child(EmptySpace::new_splitter(SizeConstraints(
-        SizeConstraint::flexible(0),
-        SizeConstraint::fixed(1),
-    )));
-
-    tab_content.add_child(CadView::new(
-        SizeConstraints(SizeConstraint::flexible(200), SizeConstraint::flexible(200)),
-        editor.clone(),
-    ));
-
-    let (_cad_tab, _document_id) = draws.borrow_mut().add_tab_with_id(
-        new_file_caption.clone(),
-        GuiSystem::default_size(&new_file_caption, None, &font)
-            .0
-            .absolute,
-        tab_content,
-        callback!( [draws] (id) {
-            draws.borrow_mut().delete_tab(id);
-        }),
-    );
+pub fn new_file(font: Font, editor: Rc<RefCell<Editor>>) {
+    let document_id = editor.borrow_mut().add_random_document();
+    editor
+        .borrow_mut()
+        .add_tab_by_existing_document(font, document_id, None);
 }
