@@ -47,7 +47,6 @@ pub trait Application {
     fn on_create(&mut self, context: Rc<RefCell<Context>>);
     fn on_close(&mut self, context: Rc<RefCell<Context>>);
     fn on_change_position(&mut self, window_position: WindowPosition);
-    fn on_draw(&self, draw_context: &mut DrawContext);
 }
 
 pub struct SystemContext {
@@ -98,20 +97,20 @@ pub fn get_window_move_bounds(hwnd: HWND) -> APIResult<RECT> {
     unsafe {
         let window_rect = get_window_rect(hwnd)?;
         let mut frame_rect = window_rect;
-        let _result = DwmGetWindowAttribute(
+        let _dwa_result = DwmGetWindowAttribute(
             hwnd,
             DWMWA_EXTENDED_FRAME_BOUNDS,
             &mut frame_rect as *mut RECT as *mut _,
             std::mem::size_of::<RECT>() as u32,
         );
         // dont care about result, window_rect is ok for us
-        let desctop_rect = get_desctop_rect()?;
+        let desktop_rect = get_desctop_rect()?;
 
         Ok(RECT {
-            left: desctop_rect.left + window_rect.left - frame_rect.left,
-            top: desctop_rect.top + window_rect.top - frame_rect.top,
-            right: desctop_rect.right + window_rect.right - frame_rect.right,
-            bottom: desctop_rect.bottom + window_rect.bottom - frame_rect.bottom,
+            left: desktop_rect.left + window_rect.left - frame_rect.left,
+            top: desktop_rect.top + window_rect.top - frame_rect.top,
+            right: desktop_rect.right + window_rect.right - frame_rect.right,
+            bottom: desktop_rect.bottom + window_rect.bottom - frame_rect.bottom,
         })
     }
 }
@@ -315,6 +314,10 @@ fn get_window_position(hwnd: HWND) -> APIResult<WindowPosition> {
     }
 }
 
+unsafe fn repaint(hwnd: HWND) -> APIResult<BOOL> {
+    run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))
+}
+
 unsafe fn maybe_window_proc(
     hwnd: HWND,
     msg: UINT,
@@ -345,7 +348,7 @@ unsafe fn maybe_window_proc(
             for c in str.chars() {
                 if context.borrow_mut().gui_system.on_char(c) {
                     run_jobs(context.clone(), hwnd)?;
-                    run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                    repaint(hwnd)?;
                 }
             }
         }
@@ -368,7 +371,7 @@ unsafe fn maybe_window_proc(
                 };
                 if need_handle {
                     run_jobs(context.clone(), hwnd)?;
-                    run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                    repaint(hwnd)?;
                 }
             }
         }
@@ -378,7 +381,7 @@ unsafe fn maybe_window_proc(
                 let (_, _, context) = get_context()?;
                 if context.borrow_mut().gui_system.on_key_up(key) {
                     run_jobs(context.clone(), hwnd)?;
-                    run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                    repaint(hwnd)?;
                 }
             }
         }
@@ -395,7 +398,7 @@ unsafe fn maybe_window_proc(
                 let (_, _, context) = get_context()?;
                 if context.borrow_mut().gui_system.on_hotkey(hotkey) {
                     run_jobs(context.clone(), hwnd)?;
-                    run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                    repaint(hwnd)?;
                 }
             }
         }
@@ -412,36 +415,33 @@ unsafe fn maybe_window_proc(
                 (rect.right - rect.left) as usize,
                 (rect.bottom - rect.top) as usize,
             );
-            let (application, buffer, context) = get_context()?;
+            let (_, buffer, context) = get_context()?;
             if buffer.is_none() || buffer.as_ref().unwrap().get_size() != rect_size {
                 *buffer = Some(DIBSection::new(rect_size)?);
                 context.borrow_mut().gui_system.on_resize();
             }
 
             let buffer = buffer.as_mut().unwrap();
-            {
-                let mut context_borrow_mut = context.borrow_mut();
-                let context_ref = context_borrow_mut.deref_mut();
-                let mut draw_context = DrawContext {
-                    buffer: buffer.as_view_mut(),
-                    font_factory: &mut context_ref.font_factory,
-                };
+            let mut context_borrow_mut = context.borrow_mut();
+            let context_ref = context_borrow_mut.deref_mut();
+            let mut draw_context = DrawContext {
+                buffer: buffer.as_view_mut(),
+                font_factory: &mut context_ref.font_factory,
+            };
 
-                application.on_draw(&mut draw_context);
-                context_ref.gui_system.on_draw(&mut draw_context);
-                let paint_struct_context = PaintStructContext::new(hwnd)?;
-                run_api!(BitBlt(
-                    paint_struct_context.get_dc(),
-                    0,
-                    0,
-                    rect_size.0 as i32,
-                    rect_size.1 as i32,
-                    buffer.get_dc(),
-                    0,
-                    0,
-                    SRCCOPY
-                ))?;
-            }
+            context_ref.gui_system.on_draw(&mut draw_context);
+            let paint_struct_context = PaintStructContext::new(hwnd)?;
+            run_api!(BitBlt(
+                paint_struct_context.get_dc(),
+                0,
+                0,
+                rect_size.0 as i32,
+                rect_size.1 as i32,
+                buffer.get_dc(),
+                0,
+                0,
+                SRCCOPY
+            ))?;
         }
 
         WM_SIZING => {
@@ -509,7 +509,7 @@ unsafe fn maybe_window_proc(
             let (_, _, context) = get_context()?;
             if context.borrow_mut().gui_system.on_mouse_down(position) {
                 run_jobs(context.clone(), hwnd)?;
-                run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                repaint(hwnd)?;
             }
         }
 
@@ -528,7 +528,8 @@ unsafe fn maybe_window_proc(
                 .gui_system
                 .on_mouse_wheel(position, delta)
             {
-                run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                run_jobs(context.clone(), hwnd)?;
+                repaint(hwnd)?;
             }
         }
 
@@ -540,7 +541,7 @@ unsafe fn maybe_window_proc(
             let (_, _, context) = get_context()?;
             if context.borrow_mut().gui_system.on_mouse_move(position) {
                 run_jobs(context.clone(), hwnd)?;
-                run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                repaint(hwnd)?;
             }
 
             let mut tme = TRACKMOUSEEVENT {
@@ -556,7 +557,7 @@ unsafe fn maybe_window_proc(
             let (_, _, context) = get_context()?;
             if context.borrow_mut().gui_system.on_mouse_leave() {
                 run_jobs(context.clone(), hwnd)?;
-                run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                repaint(hwnd)?;
             }
         }
 
@@ -569,7 +570,7 @@ unsafe fn maybe_window_proc(
             let (_, _, context) = get_context()?;
             if context.borrow_mut().gui_system.on_mouse_up(position) {
                 run_jobs(context.clone(), hwnd)?;
-                run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                repaint(hwnd)?;
             }
         }
 
@@ -578,8 +579,17 @@ unsafe fn maybe_window_proc(
                 let (_, _, context) = get_context()?;
                 if context.borrow_mut().gui_system.on_deactivate() {
                     run_jobs(context.clone(), hwnd)?;
-                    run_api!(InvalidateRect(hwnd, 0 as *const RECT, 0))?;
+                    repaint(hwnd)?;
                 }
+            }
+        }
+
+        WM_TIMER => {
+            let (_, _, context) = get_context()?;
+            if context.borrow_mut().gui_system.on_timer() {
+                run_jobs(context.clone(), hwnd)?;
+                repaint(hwnd)?;
+                return Ok(0);
             }
         }
 
@@ -676,6 +686,8 @@ fn create_window(
             run_api!(ShowWindow(hwnd, SW_SHOWDEFAULT))?;
         }
 
+        SetTimer(hwnd, 0, 1, None);
+
         Ok(hwnd)
     }
 }
@@ -738,15 +750,20 @@ pub fn run_application(
     name: &str,
     application: Box<dyn Application>,
     window_position: Option<WindowPosition>,
-) -> APIResult<()> {
+) -> APIResult<()> { 
+
     std::panic::set_hook(Box::new(|info| {
         use backtrace::Backtrace;
         let bt = Backtrace::new();
-        println!("{:#?}", info);
-        println!("{:?}", bt);
-        println!("exit(3)");
+        eprintln!("{:#?}", info);
+        eprintln!("{:?}", bt);
+        eprintln!("exit(3)");
         std::process::exit(3);
     }));
+
+    unsafe {
+      SetProcessDPIAware();
+    }
 
     let font_factory = FontFactory::new(font_loader::GDIFontLoader {});
     let clipboard = application::clipboard::Clipboard::new(crate::clipboard::Clipboard::new());

@@ -13,9 +13,9 @@ use application::keys::*;
 use crate::config::*;
 use crate::document::*;
 use crate::picts::*;
-use locc::points::*;
-use locc::render::*;
-use locc::*;
+use curves::points::*;
+use curves::render::*;
+use curves::*;
 
 use rand::*;
 
@@ -254,19 +254,19 @@ impl Editor {
         let mut document = Document::new();
         let mut rng = rand::thread_rng();
         for _ in 0..10 {
-            let c = CLoCC::circle(
+            let c = Contour::circle(
                 Point::new(
                     rng.gen_range::<f64, _>(0.0..10.0),
                     rng.gen_range::<f64, _>(0.0..10.0),
                 ),
                 rng.gen_range(1.0..2.0),
             );
-            let new_entity = crate::document::LoCC::new_clocc(c);
+            let new_entity = crate::document::Curve::new_contour(c);
             document.add_entity(new_entity);
         }
 
         for _ in 0..10 {
-            let s = SoCC::line(
+            let s = Segment::line(
                 Point::new(
                     rng.gen_range::<f64, _>(0.0..10.0),
                     rng.gen_range::<f64, _>(0.0..10.0),
@@ -276,14 +276,14 @@ impl Editor {
                     rng.gen_range::<f64, _>(0.0..10.0),
                 ),
             );
-            let new_entity = crate::document::LoCC::new_socc(s);
+            let new_entity = crate::document::Curve::new_segment(s);
             document.add_entity(new_entity);
         }
 
-        let c = CLoCC::circle(Point::new(0.0, 0.0), 10.0);
-        document.add_entity(crate::document::LoCC::new_clocc(c));
-        let c = CLoCC::circle(Point::new(15.0, 5.0), 5.0);
-        document.add_entity(crate::document::LoCC::new_clocc(c));
+        let c = Contour::circle(Point::new(0.0, 0.0), 10.0);
+        document.add_entity(crate::document::Curve::new_contour(c));
+        let c = Contour::circle(Point::new(15.0, 5.0), 5.0);
+        document.add_entity(crate::document::Curve::new_contour(c));
         document.fix_history();
 
         let document_id = self.get_next_id();
@@ -531,17 +531,17 @@ impl GuiControl for CadView {
                     let highlight_point = document.get_highlight_point();
                     let mut span_buffer = vec![(0, 0); buf.get_size().1 * 4];
                     for (id, element) in document.get_content() {
-                        let locc = match element {
-                            Element::LoCC(locc) => locc,
+                        let curve = match element {
+                            Element::Curve(curve) => curve,
                             _ => continue,
                         };
 
-                        let mut l = locc.locc;
+                        let mut l = curve.curve;
                         l = l.translate(center.neg());
                         l = l.scale(scale);
                         l = l.translate(buf_center);
 
-                        let width: f64 = if locc.selected { 3.0 } else { 1.0 };
+                        let width: f64 = if curve.selected { 3.0 } else { 1.0 };
                         let mut highlight = document.is_highlight(*id);
                         if let HighlightPointKind::Center(center_arc_id) = highlight_point.kind {
                             if center_arc_id == *id {
@@ -625,6 +625,11 @@ impl GuiControl for CadView {
                             let pic_center =
                                 (highlight_point.position - center).scale(scale) + buf_center;
                             draw_pic(pic_center, &self.picts.borrow().center_point.as_view());
+                        }
+                        HighlightPointKind::Cross => {
+                            let pic_center =
+                                (highlight_point.position - center).scale(scale) + buf_center;
+                            draw_pic(pic_center, &self.picts.borrow().cross_point.as_view());
                         }
                         _ => {}
                     }

@@ -1,5 +1,5 @@
 [package]
-name = "gui_test"
+name = "ot_cad"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,7 +12,6 @@ curves = {path = "../curves"}
 directories = "4.0.1"
 rand = "0.8.5"
 serde = {version="1.0.117", features = ["derive"]}
-indexmap = "1.9.2"
 serde_json = "1.0.59"
 
 [profile.release]

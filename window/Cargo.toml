@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 backtrace = "0.3.64"
 utf16string = "0.2.0"
-winapi = {version = "0.3.9", features=["dwmapi", "errhandlingapi", "libloaderapi", "winbase", "winuser"]}
+winapi = {version = "0.3.9", features=["dwmapi", "errhandlingapi", "libloaderapi", "synchapi", "winbase", "winuser"]}
 application = {path = "../application"}
 serde = {version="1.0.117", features = ["derive"]}
 serde_json = "1.0.59"

@@ -54,7 +54,7 @@ struct QuadFunc<T: Float> {
 }
 
 impl<T: Float> QuadFunc<T> {
-    fn clocc(clocc: &CLoCC<T>, x0: T, y0: T) -> Self {
+    fn clocc(clocc: &Contour<T>, x0: T, y0: T) -> Self {
         Self {
             dd: clocc.a + clocc.a,
             dx: clocc.n.x + clocc.a * (x0 + x0 + T::one()),
@@ -101,10 +101,10 @@ fn draw_rhombe<T: Float>(
     left: &ProjectivePoint<T>,
     right: &ProjectivePoint<T>,
     bottom: &ProjectivePoint<T>,
-    left_top: &CLoCC<T>,
-    left_bottom: &CLoCC<T>,
-    right_top: &CLoCC<T>,
-    right_bottom: &CLoCC<T>,
+    left_top: &Contour<T>,
+    left_bottom: &Contour<T>,
+    right_top: &Contour<T>,
+    right_bottom: &Contour<T>,
     span_buffer: &mut [(usize, usize)],
 ) -> (usize, usize) {
     if right.p.x <= T::zero() || bottom.p.y <= T::zero() {
@@ -313,7 +313,7 @@ fn draw_rhombe<T: Float>(
 
 fn draw_quadrant<T: Float>(
     size: ImageSize,
-    border_funcs: [&CLoCC<T>; 4],
+    border_funcs: [&Contour<T>; 4],
     corners: [&ProjectivePoint<T>; 4],
     q: usize,
     span_buffer: &mut [(usize, usize)],
@@ -390,9 +390,9 @@ fn use_quadrant_bounds_aa4(
     }
 }
 
-pub fn draw_locc<T: Float>(
+pub fn draw_locc<T: Float + std::fmt::Debug>(
     dst: &mut ImageViewMut<u32>,
-    locc: &LoCC<T>,
+    locc: &Curve<T>,
     color: u32,
     width: T,
     span_buffer: &mut [(usize, usize)],
@@ -400,21 +400,21 @@ pub fn draw_locc<T: Float>(
 ) {
     assert!(anti_aliasing == 1 || anti_aliasing == 2 || anti_aliasing == 4);
     let entity = locc.scale(T::from(anti_aliasing).unwrap());
-    let curve = entity.get_clocc();
+    let curve = entity.get_contour();
     let width = width * T::from(anti_aliasing).unwrap();
     let half_width = width / (T::one() + T::one());
 
     let out_curve = curve.change_radius(half_width).unwrap();
     let maybe_in_curve = curve.change_radius(-half_width);
-    let in_curve = maybe_in_curve.unwrap_or(CLoCC::zero()).neg();
+    let in_curve = maybe_in_curve.unwrap_or(Contour::zero()).neg();
 
-    let vert_curve = CLoCC::<T> {
+    let vert_curve = Contour::<T> {
         a: T::zero(),
         n: Point::new(curve.a + curve.a, T::zero()),
         c: curve.n.x,
     };
 
-    let horz_curve = CLoCC::<T> {
+    let horz_curve = Contour::<T> {
         a: T::zero(),
         n: Point::new(T::zero(), curve.a + curve.a),
         c: curve.n.y,
@@ -490,7 +490,7 @@ pub fn draw_locc<T: Float>(
         dst.get_size().1 * anti_aliasing,
     );
     match entity {
-        LoCC::CLoCC(_) => {
+        Curve::Contour(_) => {
             for q in 0..4 {
                 let ys = draw_quadrant(
                     view_bounds,
@@ -512,17 +512,17 @@ pub fn draw_locc<T: Float>(
                 use_quadrant!(ys);
             }
         }
-        LoCC::SoCC(s) => {
+        Curve::Segment(s) => {
             let begin_direction = s.begin_direction();
             let end_direction = s.end_direction();
 
-            let begin_curve = CLoCC {
+            let begin_curve = Contour {
                 a: T::zero(),
                 n: -begin_direction.rot90(),
                 c: dot(s.begin, begin_direction.rot90()),
             };
 
-            let end_curve = CLoCC {
+            let end_curve = Contour {
                 a: T::zero(),
                 n: end_direction.rot90(),
                 c: -dot(s.end, end_direction.rot90()),
@@ -660,9 +660,9 @@ mod tests {
             let pt1 = Point::new(x1, y1);
             let pt2 = Point::new(x2, y2);
 
-            let c = CLoCC::<f32>::line(pt1, pt2);
-            let e = &LoCC::SoCC(SoCC {
-                clocc: c,
+            let c = Contour::<f32>::line(pt1, pt2);
+            let e = &Curve::Segment(Segment {
+                contour: c,
                 begin: pt1,
                 end: pt2,
                 big: false,
@@ -695,9 +695,9 @@ mod tests {
             let angle1 = rng.gen_range(0.0..PI * 2.0);
             let angle2 = rng.gen_range(0.0..PI * 2.0);
 
-            let c = CLoCC::<f32>::circle(center, radius);
-            let e = &LoCC::SoCC(SoCC {
-                clocc: c,
+            let c = Contour::<f32>::circle(center, radius);
+            let e = &Curve::Segment(Segment {
+                contour: c,
                 begin: center + Point::angle(angle1).scale(radius),
                 end: center + Point::angle(angle1 + angle2).scale(radius),
                 big: angle2 > PI,
@@ -730,31 +730,34 @@ mod tests {
             let pt1 = Point::new(x1, y1);
             let pt2 = Point::new(x2, y2);
 
-            let c = CLoCC::<f32>::line(pt1, pt2);
-            let s = SoCC {
-                clocc: c,
+            let c = Contour::<f32>::line(pt1, pt2);
+            let s = Segment {
+                contour: c,
                 begin: pt1,
                 end: pt2,
                 big: false,
             };
-            let e = LoCC::SoCC(s);
+            let e = Curve::Segment(s);
 
             let width = rng.gen_range(0.001..40.0);
             let half_width = width * 0.5;
             draw_locc(&mut dst.as_view_mut(), &e, 0, width, &mut span_buffer, 1);
             let out_curve = c.change_radius(half_width).unwrap();
-            let in_curve = c.change_radius(-half_width).unwrap_or(CLoCC::zero()).neg();
+            let in_curve = c
+                .change_radius(-half_width)
+                .unwrap_or(Contour::zero())
+                .neg();
 
             let begin_direction = s.begin_direction();
             let end_direction = s.end_direction();
 
-            let begin_curve = CLoCC {
+            let begin_curve = Contour {
                 a: 0.0,
                 n: -begin_direction.rot90(),
                 c: dot(s.begin, begin_direction.rot90()),
             };
 
-            let end_curve = CLoCC {
+            let end_curve = Contour {
                 a: 0.0,
                 n: end_direction.rot90(),
                 c: -dot(s.end, end_direction.rot90()),
@@ -799,31 +802,34 @@ mod tests {
             let angle1 = rng.gen_range(0.0..PI * 2.0);
             let angle2 = rng.gen_range(0.0..PI * 2.0);
 
-            let c = CLoCC::<f32>::circle(center, radius);
-            let s = SoCC {
-                clocc: c,
+            let c = Contour::<f32>::circle(center, radius);
+            let s = Segment {
+                contour: c,
                 begin: center + Point::angle(angle1).scale(radius),
                 end: center + Point::angle(angle1 + angle2).scale(radius),
                 big: angle2 > PI,
             };
-            let e = LoCC::SoCC(s);
+            let e = Curve::Segment(s);
 
             let width = rng.gen_range(0.001..40.0);
             let half_width = width * 0.5;
             draw_locc(&mut dst.as_view_mut(), &e, 0, width, &mut span_buffer, 1);
             let out_curve = c.change_radius(half_width).unwrap();
-            let in_curve = c.change_radius(-half_width).unwrap_or(CLoCC::zero()).neg();
+            let in_curve = c
+                .change_radius(-half_width)
+                .unwrap_or(Contour::zero())
+                .neg();
 
             let begin_direction = s.begin_direction();
             let end_direction = s.end_direction();
 
-            let begin_curve = CLoCC {
+            let begin_curve = Contour {
                 a: 0.0,
                 n: -begin_direction.rot90(),
                 c: dot(s.begin, begin_direction.rot90()),
             };
 
-            let end_curve = CLoCC {
+            let end_curve = Contour {
                 a: 0.0,
                 n: end_direction.rot90(),
                 c: -dot(s.end, end_direction.rot90()),

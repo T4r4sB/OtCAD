@@ -285,6 +285,16 @@ impl GuiControl for Container {
                 }
                 return false;
             }
+            GuiMessage::Timer => {
+                let mut result = false;
+                for child in &self.children {
+                    if child.borrow_mut().on_message(GuiMessage::Timer) {
+                        child.borrow_mut().get_base_mut().need_redraw = true;
+                        result = true;
+                    }
+                }
+                return result;
+            }
             GuiMessage::Create => {
                 for child in &self.children {
                     child.borrow_mut().on_message(GuiMessage::Create);
@@ -1903,6 +1913,16 @@ impl GuiControl for TabControl {
                         .on_message(GuiMessage::GetHotkeys(hotkey_map, active));
                 }
                 return false;
+            }
+            GuiMessage::Timer => {
+                let mut result = false;
+                for child in &self.children {
+                    if child.borrow_mut().on_message(GuiMessage::Timer) {
+                        child.borrow_mut().get_base_mut().need_redraw = true;
+                        result = true;
+                    }
+                }
+                return result;
             }
             GuiMessage::Create => {
                 self.header.on_message(m);

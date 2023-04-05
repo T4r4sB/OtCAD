@@ -141,6 +141,7 @@ pub enum GuiMessage<'i, 'j> {
     KeyUp(Key),
     Hotkey(Hotkey, &'i mut bool),
     GetHotkeys(&'i mut HashMap<Hotkey, HotkeyCallback>, bool),
+    Timer,
     Show,
     Hide,
     Create,
@@ -340,6 +341,17 @@ impl GuiSystem {
                 false,
             ));
         }
+    }
+
+    pub fn on_timer(&mut self) -> bool {
+        if let Some(root) = &self.root {
+            let mut root = root.borrow_mut();
+            if root.on_message(GuiMessage::Timer) {
+                root.get_base_mut().need_redraw = true;
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn set_color_theme(&mut self, color_theme: GuiColorTheme) {

@@ -76,6 +76,28 @@ pub fn complex_mul<T: Float>(a: Point<T>, b: Point<T>) -> Point<T> {
     }
 }
 
+impl<T: Float> Index<usize> for Point<T> {
+    type Output = T;
+
+    fn index(&self, i: usize) -> &Self::Output {
+        match i {
+            0 => &self.x,
+            1 => &self.y,
+            _ => panic!("index of 2d point should be 0 or 1"),
+        }
+    }
+}
+
+impl<T: Float> IndexMut<usize> for Point<T> {
+    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
+        match i {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            _ => panic!("index of 2d point should be 0 or 1"),
+        }
+    }
+}
+
 impl<T: Float> Add for Point<T> {
     type Output = Self;
 
@@ -87,6 +109,13 @@ impl<T: Float> Add for Point<T> {
     }
 }
 
+impl<T: Float + std::ops::AddAssign> AddAssign for Point<T> {
+    fn add_assign(&mut self, other: Self) {
+        self.x += other.x;
+        self.y += other.y;
+    }
+}
+
 impl<T: Float> Sub for Point<T> {
     type Output = Self;
 
@@ -95,6 +124,13 @@ impl<T: Float> Sub for Point<T> {
             x: self.x - other.x,
             y: self.y - other.y,
         }
+    }
+}
+
+impl<T: Float + std::ops::SubAssign> SubAssign for Point<T> {
+    fn sub_assign(&mut self, other: Self) {
+        self.x -= other.x;
+        self.y -= other.y;
     }
 }
 

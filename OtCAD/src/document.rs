@@ -1,4 +1,5 @@
 use crate::config::*;
+use curves::solver::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -8,29 +9,29 @@ pub struct Group {
     pub selected: bool,
 }
 
-type Point = locc::points::Point<f64>;
-type CLoCC = locc::CLoCC<f64>;
-type SoCC = locc::SoCC<f64>;
+type Point = curves::points::Point<f64>;
+type Contour = curves::Contour<f64>;
+type Segment = curves::Segment<f64>;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct LoCC {
-    pub locc: locc::LoCC<f64>,
+pub struct Curve {
+    pub curve: curves::Curve<f64>,
     pub group_id: Option<usize>,
     pub selected: bool,
 }
 
-impl LoCC {
-    pub fn new_clocc(c: CLoCC) -> Self {
+impl Curve {
+    pub fn new_contour(c: Contour) -> Self {
         Self {
-            locc: locc::LoCC::CLoCC(c),
+            curve: curves::Curve::Contour(c),
             group_id: None,
             selected: false,
         }
     }
 
-    pub fn new_socc(s: SoCC) -> Self {
+    pub fn new_segment(s: Segment) -> Self {
         Self {
-            locc: locc::LoCC::SoCC(s),
+            curve: curves::Curve::Segment(s),
             group_id: None,
             selected: false,
         }
@@ -39,7 +40,7 @@ impl LoCC {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Element {
-    LoCC(LoCC),
+    Curve(Curve),
     Group(Group),
 }
 
@@ -183,6 +184,8 @@ impl Default for DocumentState {
     }
 }
 
+static EPS: f64 = 1.0e-12;
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Document {
     content: HashMap<usize, Element>,
@@ -222,6 +225,7 @@ impl Document {
 
     pub fn change_scale(&mut self, delta: i32) {
         self.scale += delta;
+        self.scale = std::cmp::min(std::cmp::max(self.scale, -1000), 1500);
     }
 
     pub fn get_content(&self) -> &HashMap<usize, Element> {
@@ -289,7 +293,7 @@ impl Document {
             }
             EditionRef::AddToGroup(group_id, id) => {
                 match content.get_mut(&id) {
-                    Some(Element::LoCC(e)) => {
+                    Some(Element::Curve(e)) => {
                         e.group_id = Some(group_id);
                     }
                     _ => {}
@@ -303,7 +307,7 @@ impl Document {
             }
             EditionRef::RemoveFromGroup(group_id, id) => {
                 match content.get_mut(&id) {
-                    Some(Element::LoCC(e)) => {
+                    Some(Element::Curve(e)) => {
                         // assume than entity_group_id == Some(group_id)
                         // we cant assert here, because file can be corrupted
                         // TODO implement warning message system
@@ -336,7 +340,7 @@ impl Document {
                         }
                     }
                 }
-                Element::LoCC(e) => {
+                Element::Curve(e) => {
                     if let Some(group_id) = e.group_id {
                         result_group_id = Some(group_id);
                         diff.editions.push(Edition::RemoveFromGroup(group_id, id));
@@ -349,18 +353,18 @@ impl Document {
         (diff, result_group_id)
     }
 
-    fn add_entity_diff(&self, locc: LoCC) -> (Diff, usize) {
+    fn add_entity_diff(&self, curve: Curve) -> (Diff, usize) {
         // todo create diff only
         let entity_id = self.last_entity_id;
         let mut diff = Diff::default();
         diff.editions
-            .push(Edition::Add(Element::LoCC(locc), entity_id));
+            .push(Edition::Add(Element::Curve(curve), entity_id));
 
         (diff, entity_id)
     }
 
-    pub fn add_entity(&mut self, locc: LoCC) {
-        let diff = self.add_entity_diff(locc).0;
+    pub fn add_entity(&mut self, curve: Curve) {
+        let diff = self.add_entity_diff(curve).0;
         self.last_entity_id += 1;
         self.add_and_apply_diff(diff);
     }
@@ -368,8 +372,8 @@ impl Document {
     pub fn remove_selected(&mut self) {
         let mut diff = Diff::default();
         for (id, l) in &self.content {
-            if let Element::LoCC(locc) = l {
-                if locc.selected {
+            if let Element::Curve(curve) = l {
+                if curve.selected {
                     diff = diff.append(self.remove_entity_diff(*id).0);
                 }
             };
@@ -408,8 +412,8 @@ impl Document {
                     selected_id: target,
                 });
                 if let Some(target) = target {
-                    if let Some(Element::LoCC(locc)) = self.content.get_mut(&target) {
-                        locc.selected = !locc.selected;
+                    if let Some(Element::Curve(curve)) = self.content.get_mut(&target) {
+                        curve.selected = !curve.selected;
                     }
                 }
             }
@@ -427,8 +431,8 @@ impl Document {
 
     fn set_selection(&mut self, ids: &HashSet<usize>, selected: bool) {
         for id in ids {
-            if let Some(Element::LoCC(locc)) = self.content.get_mut(id) {
-                locc.selected = selected;
+            if let Some(Element::Curve(curve)) = self.content.get_mut(id) {
+                curve.selected = selected;
             }
         }
     }
@@ -436,6 +440,7 @@ impl Document {
     fn fill_snap_point_info(&mut self, position: Point, config: &Config) -> bool {
         let mut new_highlight_point = HighlightPoint::default();
         let mut sqr_dist = self.snap_distance() * self.snap_distance();
+        let treshold = EPS;
         // step1: try snap to grid
         if config.snap_options.snap_grid {
             let grid_step = self.get_grid_step();
@@ -456,36 +461,60 @@ impl Document {
                 },
             );
             let sqr_candidate_dist = (position - grid_point).sqr_length();
-            if sqr_candidate_dist < sqr_dist {
+            if sqr_candidate_dist < sqr_dist - treshold {
                 sqr_dist = sqr_candidate_dist;
                 new_highlight_point = HighlightPoint::grid(grid_point);
             }
         }
         // step2 : try snap to endpoint
-        for (id, l) in &mut self.content {
-            if let Element::LoCC(locc) = l {
+        let mut iter1 = self.content.iter();
+        while let Some((id, l)) = iter1.next() {
+            if let Element::Curve(curve) = l {
                 if config.snap_options.snap_endpoints {
-                    if let locc::LoCC::SoCC(socc) = locc.locc {
-                        let sqr_candidate_dist = (position - socc.begin).sqr_length();
-                        if sqr_candidate_dist < sqr_dist {
+                    if let curves::Curve::Segment(s) = curve.curve {
+                        let sqr_candidate_dist = (position - s.begin).sqr_length();
+                        if sqr_candidate_dist < sqr_dist - treshold {
                             sqr_dist = sqr_candidate_dist;
-                            new_highlight_point = HighlightPoint::end(socc.begin);
+                            new_highlight_point = HighlightPoint::end(s.begin);
                         }
-                        let sqr_candidate_dist = (position - socc.end).sqr_length();
-                        if sqr_candidate_dist < sqr_dist {
+                        let sqr_candidate_dist = (position - s.end).sqr_length();
+                        if sqr_candidate_dist < sqr_dist - treshold {
                             sqr_dist = sqr_candidate_dist;
-                            new_highlight_point = HighlightPoint::end(socc.end);
+                            new_highlight_point = HighlightPoint::end(s.end);
                         }
                     }
                 }
                 if config.snap_options.snap_centers {
-                    let clocc = locc.locc.get_clocc();
+                    let contour = curve.curve.get_contour();
                     if let Some((sqr_candidate_dist, center)) =
-                        clocc.sqr_distance_to_center(position, sqr_dist)
+                        contour.sqr_distance_to_center(position, sqr_dist)
                     {
-                        if sqr_candidate_dist < sqr_dist {
+                        if sqr_candidate_dist < sqr_dist - treshold {
                             sqr_dist = sqr_candidate_dist;
                             new_highlight_point = HighlightPoint::center(center, *id);
+                        }
+                    }
+                }
+                if config.snap_options.snap_crosses {
+                    let dist_to_current = curve.curve.distance(position);
+                    if dist_to_current * dist_to_current < sqr_dist {
+                        let mut iter2 = iter1.clone();
+                        while let Some((_id2, l2)) = iter2.next() {
+                            if let Element::Curve(curve2) = l2 {
+                                let dist_to_current2 = curve2.curve.distance(position);
+                                if dist_to_current2 * dist_to_current2 < sqr_dist {
+                                    for candidate in
+                                        intersection_curves(&curve.curve, &curve2.curve, EPS)
+                                    {
+                                        let sqr_candidate_dist =
+                                            (position - candidate).sqr_length();
+                                        if sqr_candidate_dist < sqr_dist - treshold {
+                                            sqr_dist = sqr_candidate_dist;
+                                            new_highlight_point = HighlightPoint::cross(candidate);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -518,8 +547,8 @@ impl Document {
                 let max_distance = self.slide_distance();
                 if (document_click.point - position).sqr_length() > max_distance * max_distance {
                     if let Some(target) = document_click.selected_id {
-                        if let Some(Element::LoCC(locc)) = self.content.get_mut(&target) {
-                            locc.selected = false;
+                        if let Some(Element::Curve(curve)) = self.content.get_mut(&target) {
+                            curve.selected = false;
                         }
                     }
                     let new_selection =
@@ -549,8 +578,8 @@ impl Document {
     pub fn skip_state(&mut self) {
         self.state = DocumentState::Nothing;
         for (_, l) in &mut self.content {
-            if let Element::LoCC(locc) = l {
-                locc.selected = false;
+            if let Element::Curve(curve) = l {
+                curve.selected = false;
             };
         }
     }
@@ -559,12 +588,12 @@ impl Document {
         let mut max_distance = max_distance;
         let mut target = None;
         for (id, l) in &self.content {
-            let locc = match l {
-                Element::LoCC(locc) => locc,
+            let curve = match l {
+                Element::Curve(curve) => curve,
                 _ => continue,
             };
 
-            let dist = locc.locc.distance(position).abs();
+            let dist = curve.curve.distance(position).abs();
             if dist < max_distance {
                 max_distance = dist;
                 target = Some(*id);
@@ -577,12 +606,12 @@ impl Document {
     fn find_locc_inside_rect(&self, corner1: Point, corner2: Point) -> HashSet<usize> {
         let mut result = HashSet::new();
         for (id, l) in &self.content {
-            let locc = match l {
-                Element::LoCC(locc) if !locc.selected => locc,
+            let curve = match l {
+                Element::Curve(curve) if !curve.selected => curve,
                 _ => continue,
             };
 
-            if locc.locc.in_rect(corner1, corner2) {
+            if curve.curve.in_rect(corner1, corner2) {
                 result.insert(*id);
             }
         }

@@ -20,11 +20,11 @@ impl Picts {
 
         end_point
             .as_view_mut()
-            .fill_with_coord(|p, (x, y)| *p = x == 0 || x == size - 1 || y == 0 || y == size - 1);
+            .fill_with_coord(|p, (x, y)| *p = x <= 1 || x >= size - 2 || y <= 1 || y >= size - 2);
 
-        cross_point
-            .as_view_mut()
-            .fill_with_coord(|p, (x, y)| *p = x == y || x + y == size - 1);
+        cross_point.as_view_mut().fill_with_coord(|p, (x, y)| {
+            *p = (x <= y + 1 && y <= x + 1) || (x + y >= size - 2 && x + y <= size)
+        });
 
         tangent_point.as_view_mut().fill_with_coord(|p, (x, y)| {
             *p = if y == 0 {
@@ -46,7 +46,7 @@ impl Picts {
             let size = grid_point_size as i32;
             let x = (x as i32 * 2 - (size - 1)).abs();
             let y = (y as i32 * 2 - (size - 1)).abs();
-            *p = (x == 2 || y == 2) && x >= 2 && y >= 2;
+            *p = x <= 2 || y <= 2;
         });
 
         center_point.as_view_mut().fill_with_coord(|p, (x, y)| {
@@ -54,7 +54,7 @@ impl Picts {
             let x = x as i32 * 2 - (size - 1);
             let y = y as i32 * 2 - (size - 1);
             let r2 = x * x + y * y;
-            *p = r2 <= (size - 1) * (size - 1) + 16 && r2 > (size - 3) * (size - 3) + 16;
+            *p = r2 <= (size - 1) * (size - 1) + 16 && r2 > (size - 5) * (size - 5) + 9;
         });
 
         Self {
